@@ -17,7 +17,7 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three'
-import { BlockId, VoxelWorld } from './game/world'
+import { BlockId, PLACEABLE_BLOCKS, type PlaceableBlockDefinition, VoxelWorld } from './game/world'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -35,6 +35,21 @@ function getRequiredElement<T extends Element>(selector: string) {
   return element
 }
 
+const hotbarMarkup = PLACEABLE_BLOCKS.map((block, index) => {
+  return `
+    <button
+      type="button"
+      class="hotbar-slot"
+      data-block-id="${block.id}"
+      aria-label="选择${block.label}"
+    >
+      <span class="hotbar-key">${index + 1}</span>
+      <img src="${assetBase}${block.iconPath}" alt="${block.label}" width="48" height="48" />
+      <span class="hotbar-name">${block.label}</span>
+    </button>
+  `
+}).join('')
+
 app.innerHTML = `
   <div class="shell">
     <div id="viewport" class="viewport"></div>
@@ -43,19 +58,8 @@ app.innerHTML = `
       <div class="panel">
         <p class="eyebrow">web_mc</p>
         <h1>Creative Sandbox</h1>
-        <p>点击画面锁定鼠标，左键移除，右键放置草方块。</p>
-        <div class="selected-block">
-          <img
-            src="${assetBase}kenney_voxel-pack/PNG/Tiles/grass_top.png"
-            alt="Grass block tile"
-            width="48"
-            height="48"
-          />
-          <div>
-            <strong>当前方块</strong>
-            <p>Kenney grass block</p>
-          </div>
-        </div>
+        <p>点击画面锁定鼠标，左键移除，右键放置当前选中的方块。</p>
+        <p class="hint">数字键 1-${PLACEABLE_BLOCKS.length} 可以快速切换快捷栏。</p>
       </div>
       <div class="panel metrics">
         <p id="mode-line">模式：飞行</p>
@@ -68,10 +72,15 @@ app.innerHTML = `
         <span>W/A/S/D 移动</span>
         <span>Space 上升或跳跃</span>
         <span>Shift 下降</span>
+        <span>1-${PLACEABLE_BLOCKS.length} 切换方块</span>
         <span>G 切换飞行/步行</span>
         <span>R 重置位置</span>
         <span>Esc 解锁鼠标</span>
       </div>
+    </section>
+    <section class="hotbar-layer">
+      <div id="hotbar" class="hotbar">${hotbarMarkup}</div>
+      <p id="hotbar-label" class="hotbar-label"></p>
     </section>
     <div id="lock-screen" class="lock-screen">
       <div class="lock-card">
@@ -95,6 +104,10 @@ const startButton = getRequiredElement<HTMLButtonElement>('#start-button')
 const modeLine = getRequiredElement<HTMLParagraphElement>('#mode-line')
 const coordsLine = getRequiredElement<HTMLParagraphElement>('#coords-line')
 const worldLine = getRequiredElement<HTMLParagraphElement>('#world-line')
+const hotbar = getRequiredElement<HTMLDivElement>('#hotbar')
+const hotbarLabel = getRequiredElement<HTMLParagraphElement>('#hotbar-label')
+
+const hotbarButtons = Array.from(hotbar.querySelectorAll<HTMLButtonElement>('.hotbar-slot'))
 
 const renderer = new WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -151,6 +164,7 @@ let pitch = 0
 let isFlying = true
 let isGrounded = false
 let verticalVelocity = 0
+let selectedBlockIndex = 0
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -159,6 +173,8 @@ const walkSpeed = 7
 const flySpeed = 10
 const gravity = 24
 const jumpVelocity = 9
+
+const getSelectedBlock = () => PLACEABLE_BLOCKS[selectedBlockIndex]
 
 const requestLock = () => {
   renderer.domElement.requestPointerLock()
@@ -187,12 +203,48 @@ function updateCameraRotation() {
   camera.quaternion.setFromEuler(lookEuler)
 }
 
+function updateHotbarSelection() {
+  const selectedBlock = getSelectedBlock()
+
+  for (const button of hotbarButtons) {
+    const blockId = Number(button.dataset.blockId)
+    button.classList.toggle('is-selected', blockId === selectedBlock.id)
+  }
+
+  hotbarLabel.textContent = `当前方块：${selectedBlock.label}`
+}
+
+function setSelectedBlock(block: PlaceableBlockDefinition) {
+  const nextIndex = PLACEABLE_BLOCKS.findIndex((entry) => entry.id === block.id)
+  if (nextIndex === -1) {
+    return
+  }
+
+  selectedBlockIndex = nextIndex
+  updateHotbarSelection()
+}
+
+function setSelectedBlockByIndex(index: number) {
+  const normalizedIndex = ((index % PLACEABLE_BLOCKS.length) + PLACEABLE_BLOCKS.length) % PLACEABLE_BLOCKS.length
+  selectedBlockIndex = normalizedIndex
+  updateHotbarSelection()
+}
+
 function moveWithCollisions(delta: Vector3) {
   const epsilon = 1e-4
 
   camera.position.x += delta.x
   let bounds = getPlayerBounds()
-  if (world.intersectsSolid(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ)) {
+  if (
+    world.intersectsSolid(
+      bounds.minX,
+      bounds.minY,
+      bounds.minZ,
+      bounds.maxX,
+      bounds.maxY,
+      bounds.maxZ,
+    )
+  ) {
     if (delta.x > 0) {
       camera.position.x = Math.floor(bounds.maxX) - playerRadius - epsilon
     } else if (delta.x < 0) {
@@ -202,7 +254,16 @@ function moveWithCollisions(delta: Vector3) {
 
   camera.position.z += delta.z
   bounds = getPlayerBounds()
-  if (world.intersectsSolid(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ)) {
+  if (
+    world.intersectsSolid(
+      bounds.minX,
+      bounds.minY,
+      bounds.minZ,
+      bounds.maxX,
+      bounds.maxY,
+      bounds.maxZ,
+    )
+  ) {
     if (delta.z > 0) {
       camera.position.z = Math.floor(bounds.maxZ) - playerRadius - epsilon
     } else if (delta.z < 0) {
@@ -213,7 +274,16 @@ function moveWithCollisions(delta: Vector3) {
   isGrounded = false
   camera.position.y += delta.y
   bounds = getPlayerBounds()
-  if (world.intersectsSolid(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ)) {
+  if (
+    world.intersectsSolid(
+      bounds.minX,
+      bounds.minY,
+      bounds.minZ,
+      bounds.maxX,
+      bounds.maxY,
+      bounds.maxZ,
+    )
+  ) {
     if (delta.y > 0) {
       camera.position.y = Math.floor(bounds.maxY) - (playerHeight - eyeHeight) - epsilon
     } else if (delta.y < 0) {
@@ -284,7 +354,7 @@ function placeOrRemoveBlock(place: boolean) {
     return
   }
 
-  world.setBlock(targetX, targetY, targetZ, BlockId.Grass)
+  world.setBlock(targetX, targetY, targetZ, getSelectedBlock().id)
 }
 
 function updateMovement(deltaTime: number) {
@@ -360,6 +430,14 @@ document.addEventListener('pointerlockchange', () => {
 })
 
 window.addEventListener('keydown', (event) => {
+  if (/^Digit[1-9]$/.test(event.code)) {
+    const index = Number(event.code.at(-1)) - 1
+    if (index < PLACEABLE_BLOCKS.length) {
+      setSelectedBlockByIndex(index)
+      event.preventDefault()
+    }
+  }
+
   keys.add(event.code)
 
   if (event.code === 'KeyR') {
@@ -379,6 +457,36 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('keyup', (event) => {
   keys.delete(event.code)
 })
+
+hotbar.addEventListener('click', (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+
+  const button = target.closest<HTMLButtonElement>('.hotbar-slot')
+  if (!button) {
+    return
+  }
+
+  const blockId = Number(button.dataset.blockId)
+  const block = PLACEABLE_BLOCKS.find((entry) => entry.id === blockId)
+  if (block) {
+    setSelectedBlock(block)
+  }
+})
+
+hotbar.addEventListener(
+  'wheel',
+  (event) => {
+    event.preventDefault()
+    const delta = Math.sign(event.deltaY)
+    if (delta !== 0) {
+      setSelectedBlockByIndex(selectedBlockIndex + delta)
+    }
+  },
+  { passive: false },
+)
 
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (document.pointerLockElement !== renderer.domElement) {
@@ -408,4 +516,5 @@ window.addEventListener('resize', () => {
 })
 
 resetPlayer()
+updateHotbarSelection()
 animate()

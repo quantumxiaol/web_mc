@@ -130,37 +130,10 @@ button {
   margin-top: 6px;
 }
 
-.selected-block {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.selected-block img {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
-  image-rendering: pixelated;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
-}
-
-.selected-block strong,
-.selected-block p {
-  display: block;
-}
-
-.selected-block strong {
-  font-size: 0.95rem;
-}
-
-.selected-block p {
-  margin-top: 2px;
-  font-size: 0.85rem;
-  color: rgba(245, 245, 240, 0.76);
+.hint {
+  margin-top: 10px;
+  color: rgba(255, 233, 171, 0.92);
+  font-size: 0.92rem;
 }
 
 .controls {
@@ -174,6 +147,94 @@ button {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.1);
   font-size: 0.93rem;
+}
+
+.hotbar-layer {
+  position: absolute;
+  inset-inline: 16px;
+  bottom: 108px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.hotbar {
+  display: flex;
+  gap: 10px;
+  max-width: 100%;
+  padding: 12px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 21, 27, 0.56);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 44px rgba(11, 18, 26, 0.28);
+  pointer-events: auto;
+}
+
+.hotbar-slot {
+  position: relative;
+  width: 88px;
+  min-width: 88px;
+  padding: 14px 10px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+  color: #f5f0e5;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.hotbar-slot:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 222, 149, 0.44);
+}
+
+.hotbar-slot.is-selected {
+  border-color: rgba(255, 217, 120, 0.95);
+  background: linear-gradient(180deg, rgba(255, 214, 115, 0.24), rgba(255, 185, 84, 0.14));
+  box-shadow: 0 0 0 1px rgba(255, 213, 106, 0.18), 0 16px 36px rgba(0, 0, 0, 0.24);
+}
+
+.hotbar-slot img {
+  display: block;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 8px;
+  image-rendering: pixelated;
+}
+
+.hotbar-key,
+.hotbar-name {
+  display: block;
+}
+
+.hotbar-key {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  font-size: 0.72rem;
+  color: rgba(255, 241, 205, 0.72);
+}
+
+.hotbar-name {
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.hotbar-label {
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(10, 21, 27, 0.48);
+  color: rgba(255, 242, 215, 0.96);
+  font-size: 0.9rem;
+  pointer-events: none;
 }
 
 .crosshair {
@@ -282,6 +343,33 @@ button {
   .metrics,
   .lock-card {
     width: 100%;
+  }
+
+  .hotbar-layer {
+    inset-inline: 10px;
+    bottom: 124px;
+  }
+
+  .hotbar {
+    gap: 8px;
+    padding: 10px;
+    overflow-x: auto;
+    justify-content: flex-start;
+  }
+
+  .hotbar-slot {
+    width: 74px;
+    min-width: 74px;
+    padding: 12px 8px 9px;
+  }
+
+  .hotbar-slot img {
+    width: 40px;
+    height: 40px;
+  }
+
+  .hotbar-name {
+    font-size: 0.78rem;
   }
 
   .controls {

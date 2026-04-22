@@ -8,6 +8,7 @@ import {
   Raycaster,
   Scene,
   SRGBColorSpace,
+  Texture,
   TextureLoader,
 } from 'three'
 
@@ -19,6 +20,10 @@ const assetBase = import.meta.env.BASE_URL
 export const BlockId = {
   Air: 0,
   Grass: 1,
+  Dirt: 2,
+  Stone: 3,
+  Sand: 4,
+  Wood: 5,
 } as const
 
 export type BlockId = (typeof BlockId)[keyof typeof BlockId]
@@ -29,12 +34,18 @@ export interface BlockPosition {
   z: number
 }
 
+export interface PlaceableBlockDefinition {
+  id: BlockId
+  label: string
+  iconPath: string
+}
+
 interface Chunk {
   cx: number
   cz: number
   data: Uint8Array
-  mesh?: InstancedMesh<BoxGeometry, MeshLambertMaterial[]>
-  instances: BlockPosition[]
+  meshes: InstancedMesh<BoxGeometry, MeshLambertMaterial[]>[]
+  instancesByBlock: Partial<Record<BlockId, BlockPosition[]>>
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
@@ -48,17 +59,56 @@ const loadVoxelTexture = (path: string) => {
   return texture
 }
 
+const createBlockMaterials = (side: Texture, top = side, bottom = side) => [
+  new MeshLambertMaterial({ map: side }),
+  new MeshLambertMaterial({ map: side }),
+  new MeshLambertMaterial({ map: top }),
+  new MeshLambertMaterial({ map: bottom }),
+  new MeshLambertMaterial({ map: side }),
+  new MeshLambertMaterial({ map: side }),
+]
+
 const grassTopTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/grass_top.png')
 const dirtTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/dirt.png')
 const grassSideTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/dirt_grass.png')
+const stoneTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/stone.png')
+const sandTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/sand.png')
+const woodTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/wood.png')
 
-const blockMaterials = [
-  new MeshLambertMaterial({ map: grassSideTexture }),
-  new MeshLambertMaterial({ map: grassSideTexture }),
-  new MeshLambertMaterial({ map: grassTopTexture }),
-  new MeshLambertMaterial({ map: dirtTexture }),
-  new MeshLambertMaterial({ map: grassSideTexture }),
-  new MeshLambertMaterial({ map: grassSideTexture }),
+const blockMaterialMap: Partial<Record<BlockId, MeshLambertMaterial[]>> = {
+  [BlockId.Grass]: createBlockMaterials(grassSideTexture, grassTopTexture, dirtTexture),
+  [BlockId.Dirt]: createBlockMaterials(dirtTexture),
+  [BlockId.Stone]: createBlockMaterials(stoneTexture),
+  [BlockId.Sand]: createBlockMaterials(sandTexture),
+  [BlockId.Wood]: createBlockMaterials(woodTexture),
+}
+
+export const PLACEABLE_BLOCKS: PlaceableBlockDefinition[] = [
+  {
+    id: BlockId.Grass,
+    label: '草方块',
+    iconPath: 'kenney_voxel-pack/PNG/Tiles/grass_top.png',
+  },
+  {
+    id: BlockId.Dirt,
+    label: '泥土',
+    iconPath: 'kenney_voxel-pack/PNG/Tiles/dirt.png',
+  },
+  {
+    id: BlockId.Stone,
+    label: '石头',
+    iconPath: 'kenney_voxel-pack/PNG/Tiles/stone.png',
+  },
+  {
+    id: BlockId.Sand,
+    label: '沙子',
+    iconPath: 'kenney_voxel-pack/PNG/Tiles/sand.png',
+  },
+  {
+    id: BlockId.Wood,
+    label: '木块',
+    iconPath: 'kenney_voxel-pack/PNG/Tiles/wood.png',
+  },
 ]
 
 const instanceMatrix = new Matrix4()
@@ -75,7 +125,6 @@ const blockIndex = (x: number, y: number, z: number) =>
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
   private readonly raycastTargets: InstancedMesh<BoxGeometry, MeshLambertMaterial[]>[] = []
-
   private readonly scene: Scene
 
   constructor(scene: Scene) {
@@ -111,7 +160,9 @@ export class VoxelWorld {
   getLoadedBlockCount() {
     let total = 0
     for (const chunk of this.chunks.values()) {
-      total += chunk.instances.length
+      for (const blockId of PLACEABLE_BLOCKS) {
+        total += chunk.instancesByBlock[blockId.id]?.length ?? 0
+      }
     }
     return total
   }
@@ -154,7 +205,14 @@ export class VoxelWorld {
     return true
   }
 
-  intersectsSolid(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number) {
+  intersectsSolid(
+    minX: number,
+    minY: number,
+    minZ: number,
+    maxX: number,
+    maxY: number,
+    maxZ: number,
+  ) {
     const startX = Math.floor(minX)
     const endX = Math.floor(maxX - 1e-6)
     const startY = Math.floor(minY)
@@ -184,7 +242,8 @@ export class VoxelWorld {
 
     const mesh = hit.object as InstancedMesh<BoxGeometry, MeshLambertMaterial[]>
     const key = mesh.userData.chunkKey as string | undefined
-    if (!key) {
+    const blockId = mesh.userData.blockId as BlockId | undefined
+    if (!key || blockId === undefined) {
       return null
     }
 
@@ -193,7 +252,7 @@ export class VoxelWorld {
       return null
     }
 
-    const block = chunk.instances[hit.instanceId]
+    const block = chunk.instancesByBlock[blockId]?.[hit.instanceId]
     if (!block || !hit.face) {
       return null
     }
@@ -203,6 +262,7 @@ export class VoxelWorld {
       point: hit.point.clone(),
       normal: hit.face.normal.clone().round(),
       block,
+      blockId,
     }
   }
 
@@ -217,7 +277,8 @@ export class VoxelWorld {
       cx,
       cz,
       data: this.generateChunk(cx, cz),
-      instances: [],
+      meshes: [],
+      instancesByBlock: {},
     }
 
     this.chunks.set(key, chunk)
@@ -226,15 +287,19 @@ export class VoxelWorld {
   }
 
   private unloadChunk(key: string, chunk: Chunk) {
-    if (chunk.mesh) {
-      this.scene.remove(chunk.mesh)
-      const index = this.raycastTargets.indexOf(chunk.mesh)
+    this.removeChunkMeshes(chunk)
+    this.chunks.delete(key)
+  }
+
+  private removeChunkMeshes(chunk: Chunk) {
+    for (const mesh of chunk.meshes) {
+      this.scene.remove(mesh)
+      const index = this.raycastTargets.indexOf(mesh)
       if (index >= 0) {
         this.raycastTargets.splice(index, 1)
       }
     }
-
-    this.chunks.delete(key)
+    chunk.meshes = []
   }
 
   private generateChunk(cx: number, cz: number) {
@@ -250,9 +315,16 @@ export class VoxelWorld {
           Math.cos(worldZ * 0.12) * 1.3 +
           Math.sin((worldX + worldZ) * 0.08) * 0.9
         const height = Math.max(1, Math.min(6, Math.round(2 + ridge)))
+        const topBlock = height <= 2 ? BlockId.Sand : BlockId.Grass
 
         for (let y = 0; y <= height; y += 1) {
-          data[blockIndex(lx, y, lz)] = BlockId.Grass
+          let blockId: BlockId = BlockId.Stone
+          if (y === height) {
+            blockId = topBlock
+          } else if (y >= height - 2) {
+            blockId = topBlock === BlockId.Sand ? BlockId.Sand : BlockId.Dirt
+          }
+          data[blockIndex(lx, y, lz)] = blockId
         }
       }
     }
@@ -261,23 +333,18 @@ export class VoxelWorld {
   }
 
   private rebuildChunkMesh(chunk: Chunk) {
-    if (chunk.mesh) {
-      this.scene.remove(chunk.mesh)
-      const index = this.raycastTargets.indexOf(chunk.mesh)
-      if (index >= 0) {
-        this.raycastTargets.splice(index, 1)
-      }
-    }
-
-    const instances: BlockPosition[] = []
+    this.removeChunkMeshes(chunk)
+    chunk.instancesByBlock = {}
 
     for (let y = 0; y < WORLD_HEIGHT; y += 1) {
       for (let z = 0; z < CHUNK_SIZE; z += 1) {
         for (let x = 0; x < CHUNK_SIZE; x += 1) {
-          if (chunk.data[blockIndex(x, y, z)] === BlockId.Air) {
+          const blockId = chunk.data[blockIndex(x, y, z)] as BlockId
+          if (blockId === BlockId.Air) {
             continue
           }
 
+          const instances = (chunk.instancesByBlock[blockId] ??= [])
           instances.push({
             x: chunk.cx * CHUNK_SIZE + x,
             y,
@@ -287,27 +354,29 @@ export class VoxelWorld {
       }
     }
 
-    chunk.instances = instances
+    for (const definition of PLACEABLE_BLOCKS) {
+      const instances = chunk.instancesByBlock[definition.id]
+      const materials = blockMaterialMap[definition.id]
+      if (!instances || instances.length === 0 || !materials) {
+        continue
+      }
 
-    if (instances.length === 0) {
-      chunk.mesh = undefined
-      return
+      const mesh = new InstancedMesh(blockGeometry, materials, instances.length)
+      mesh.castShadow = false
+      mesh.receiveShadow = true
+      mesh.userData.chunkKey = chunkKey(chunk.cx, chunk.cz)
+      mesh.userData.blockId = definition.id
+
+      for (let index = 0; index < instances.length; index += 1) {
+        const block = instances[index]
+        instanceMatrix.setPosition(block.x + 0.5, block.y + 0.5, block.z + 0.5)
+        mesh.setMatrixAt(index, instanceMatrix)
+      }
+
+      mesh.instanceMatrix.needsUpdate = true
+      this.scene.add(mesh)
+      this.raycastTargets.push(mesh)
+      chunk.meshes.push(mesh)
     }
-
-    const mesh = new InstancedMesh(blockGeometry, blockMaterials, instances.length)
-    mesh.castShadow = false
-    mesh.receiveShadow = true
-    mesh.userData.chunkKey = chunkKey(chunk.cx, chunk.cz)
-
-    for (let index = 0; index < instances.length; index += 1) {
-      const block = instances[index]
-      instanceMatrix.setPosition(block.x + 0.5, block.y + 0.5, block.z + 0.5)
-      mesh.setMatrixAt(index, instanceMatrix)
-    }
-
-    mesh.instanceMatrix.needsUpdate = true
-    this.scene.add(mesh)
-    this.raycastTargets.push(mesh)
-    chunk.mesh = mesh
   }
 }
