@@ -34,19 +34,6 @@ pnpm build
 pnpm preview
 ```
 
-## GitHub Pages
-
-仓库已经使用 Vite 的 `base: '/web_mc/'` 配置，适合部署到：
-
-`https://<你的用户名>.github.io/web_mc/`
-
-部署前需要确认两件事：
-
-1. GitHub 仓库名确实是 `web_mc`
-2. 仓库设置里的 Pages 来源切到 `GitHub Actions`
-
-然后推送到默认分支，`.github/workflows/deploy.yml` 会自动构建并发布 `dist/`。
-
 ## 控制说明
 
 - `点击画面`：锁定鼠标
