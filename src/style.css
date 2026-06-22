@@ -237,6 +237,165 @@ button {
   pointer-events: none;
 }
 
+.palette-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 12, 20, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.palette-layer.hidden {
+  display: none;
+}
+
+.palette-panel {
+  width: min(720px, 100%);
+  max-height: min(78vh, 720px);
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 18px;
+  background: rgba(13, 24, 31, 0.92);
+  box-shadow: 0 24px 74px rgba(0, 0, 0, 0.34);
+  pointer-events: auto;
+}
+
+.palette-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.palette-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.1;
+}
+
+.palette-close {
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  color: #fff7df;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.palette-search {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  color: #fff7df;
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+
+.palette-search:focus {
+  border-color: rgba(255, 217, 120, 0.9);
+  box-shadow: 0 0 0 3px rgba(255, 217, 120, 0.16);
+}
+
+.palette-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.palette-tab {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: rgba(255, 247, 223, 0.88);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.palette-tab.is-selected {
+  border-color: rgba(255, 217, 120, 0.88);
+  color: #fff7df;
+  background: rgba(255, 200, 91, 0.18);
+}
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.palette-block {
+  min-height: 92px;
+  display: grid;
+  grid-template-rows: 44px auto;
+  align-items: center;
+  justify-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  color: #fff7df;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.palette-block:hover {
+  border-color: rgba(255, 217, 120, 0.72);
+  background: rgba(255, 214, 115, 0.15);
+}
+
+.palette-block.hidden {
+  display: none;
+}
+
+.palette-block img {
+  width: 40px;
+  height: 40px;
+  image-rendering: pixelated;
+}
+
+.palette-block span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.debug-overlay {
+  position: fixed;
+  left: 12px;
+  top: 12px;
+  z-index: 8;
+  max-width: min(720px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #e8f2ff;
+  background: rgba(0, 0, 0, 0.62);
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  pointer-events: none;
+  text-shadow: 0 1px 2px #000;
+  white-space: pre-wrap;
+}
+
+.debug-overlay.hidden {
+  display: none;
+}
+
 .crosshair {
   position: absolute;
   inset: 50% auto auto 50%;
@@ -370,6 +529,22 @@ button {
 
   .hotbar-name {
     font-size: 0.78rem;
+  }
+
+  .palette-layer {
+    padding: 12px;
+    align-items: start;
+  }
+
+  .palette-panel {
+    max-height: calc(100vh - 24px);
+    gap: 12px;
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .palette-grid {
+    grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
   }
 
   .controls {

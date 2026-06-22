@@ -5,7 +5,7 @@
 ![web_mc homepage](public/homepage.png)
 
 项目当前用了 [kenney_voxel-pack](https://www.kenney.nl/assets/voxel-pack) 里的素材：
-- 草方块使用 `grass_top.png`、`dirt_grass.png`、`dirt.png`
+- 方块材质来自 `public/kenney_voxel-pack/PNG/Tiles`
 - 启动画面使用 `public/homepage.png`
 - 原始授权说明保留在 `public/kenney_voxel-pack/License.txt`
 
@@ -14,9 +14,12 @@
 - 第一人称视角与 Pointer Lock
 - `W/A/S/D` 移动
 - `G` 切换飞行 / 步行
-- 底部快捷栏，可在草方块、泥土、石头、沙子、木块之间切换
+- 34 种可放置方块，包含地形、建筑、自然、矿石、水和岩浆
+- 9 格快捷栏，支持数字键、鼠标滚轮和 `E` 方块选择面板
 - `Space` 上升或跳跃，`Shift` 下降
 - 左键移除方块，右键放置当前选中的方块
+- `F3` 或反引号显示调试层，包含 FPS、坐标、区块、draw calls、三角形数和显存对象计数
+- 基础光照包含天空光、太阳方向光、阴影和 ACES 色调映射
 - 使用 `Uint8Array` 存储区块数据
 - 按玩家位置动态加载 `5 x 5` 个区块
 - 使用 `THREE.InstancedMesh` 渲染区块内的多种方块
@@ -40,7 +43,10 @@ pnpm preview
 - `点击画面`：锁定鼠标
 - `Esc`：释放鼠标
 - `W/A/S/D`：水平移动
-- `1-5`：切换快捷栏方块
+- `1-9`：切换快捷栏槽位
+- `鼠标滚轮`：切换快捷栏槽位
+- `E`：打开方块选择面板，点击方块会替换当前快捷栏槽位
+- `F3` / `` ` ``：显示或隐藏调试信息
 - `Space`：飞行时上升，步行时跳跃
 - `Shift`：飞行时下降
 - `G`：切换飞行 / 步行

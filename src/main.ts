@@ -1,10 +1,7 @@
 import './style.css'
 import {
-  AmbientLight,
   BoxGeometry,
-  Clock,
   Color,
-  DirectionalLight,
   Euler,
   Fog,
   Group,
@@ -13,11 +10,23 @@ import {
   PerspectiveCamera,
   Raycaster,
   Scene,
+  Timer,
   Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three'
-import { BlockId, PLACEABLE_BLOCKS, type PlaceableBlockDefinition, VoxelWorld } from './game/world'
+import {
+  BLOCK_CATEGORIES,
+  BlockId,
+  PLACEABLE_BLOCKS,
+  getBlockDefinition,
+  getBlockLabel,
+  type BlockCategory,
+  type BlockDefinition,
+} from './game/blocks'
+import { DebugOverlay } from './game/debugOverlay'
+import { configureLighting } from './game/lighting'
+import { VoxelWorld } from './game/world'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -26,6 +35,8 @@ if (!app) {
 }
 
 const assetBase = import.meta.env.BASE_URL
+const HOTBAR_SIZE = Math.min(9, PLACEABLE_BLOCKS.length)
+const hotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
 
 function getRequiredElement<T extends Element>(selector: string) {
   const element = document.querySelector<T>(selector)
@@ -35,17 +46,49 @@ function getRequiredElement<T extends Element>(selector: string) {
   return element
 }
 
-const hotbarMarkup = PLACEABLE_BLOCKS.map((block, index) => {
+const getRequiredBlockDefinition = (blockId: BlockId) => {
+  const definition = getBlockDefinition(blockId)
+  if (!definition) {
+    throw new Error(`Unknown block id: ${blockId}`)
+  }
+  return definition
+}
+
+const hotbarMarkup = hotbarBlockIds.map((blockId, index) => {
+  const block = getRequiredBlockDefinition(blockId)
   return `
     <button
       type="button"
       class="hotbar-slot"
+      data-slot-index="${index}"
       data-block-id="${block.id}"
-      aria-label="选择${block.label}"
+      aria-label="快捷栏 ${index + 1}：${block.label}"
     >
       <span class="hotbar-key">${index + 1}</span>
       <img src="${assetBase}${block.iconPath}" alt="${block.label}" width="48" height="48" />
       <span class="hotbar-name">${block.label}</span>
+    </button>
+  `
+}).join('')
+
+const paletteTabsMarkup = [
+  '<button type="button" class="palette-tab is-selected" data-category="all">全部</button>',
+  ...BLOCK_CATEGORIES.map((category) => {
+    return `<button type="button" class="palette-tab" data-category="${category.id}">${category.label}</button>`
+  }),
+].join('')
+
+const paletteMarkup = PLACEABLE_BLOCKS.map((block) => {
+  return `
+    <button
+      type="button"
+      class="palette-block"
+      data-block-id="${block.id}"
+      data-category="${block.category}"
+      aria-label="${block.label}"
+    >
+      <img src="${assetBase}${block.iconPath}" alt="${block.label}" width="40" height="40" />
+      <span>${block.label}</span>
     </button>
   `
 }).join('')
@@ -59,7 +102,7 @@ app.innerHTML = `
         <p class="eyebrow">web_mc</p>
         <h1>Creative Sandbox</h1>
         <p>点击画面锁定鼠标，左键移除，右键放置当前选中的方块。</p>
-        <p class="hint">数字键 1-${PLACEABLE_BLOCKS.length} 可以快速切换快捷栏。</p>
+        <p class="hint">数字键 1-${HOTBAR_SIZE} 可以快速切换快捷栏。</p>
       </div>
       <div class="panel metrics">
         <p id="mode-line">模式：飞行</p>
@@ -72,7 +115,10 @@ app.innerHTML = `
         <span>W/A/S/D 移动</span>
         <span>Space 上升或跳跃</span>
         <span>Shift 下降</span>
-        <span>1-${PLACEABLE_BLOCKS.length} 切换方块</span>
+        <span>1-${HOTBAR_SIZE} 切换快捷栏</span>
+        <span>滚轮切换槽位</span>
+        <span>E 方块面板</span>
+        <span>F3/\` 调试</span>
         <span>G 切换飞行/步行</span>
         <span>R 重置位置</span>
         <span>Esc 解锁鼠标</span>
@@ -81,6 +127,17 @@ app.innerHTML = `
     <section class="hotbar-layer">
       <div id="hotbar" class="hotbar">${hotbarMarkup}</div>
       <p id="hotbar-label" class="hotbar-label"></p>
+    </section>
+    <section id="palette-layer" class="palette-layer hidden" aria-hidden="true">
+      <div class="palette-panel" role="dialog" aria-label="方块选择">
+        <div class="palette-header">
+          <h2>方块</h2>
+          <button id="palette-close" class="palette-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <input id="palette-search" class="palette-search" type="search" placeholder="搜索方块" autocomplete="off" />
+        <div id="palette-tabs" class="palette-tabs">${paletteTabsMarkup}</div>
+        <div id="palette-grid" class="palette-grid">${paletteMarkup}</div>
+      </div>
     </section>
     <div id="lock-screen" class="lock-screen">
       <div class="lock-card">
@@ -106,8 +163,15 @@ const coordsLine = getRequiredElement<HTMLParagraphElement>('#coords-line')
 const worldLine = getRequiredElement<HTMLParagraphElement>('#world-line')
 const hotbar = getRequiredElement<HTMLDivElement>('#hotbar')
 const hotbarLabel = getRequiredElement<HTMLParagraphElement>('#hotbar-label')
+const paletteLayer = getRequiredElement<HTMLElement>('#palette-layer')
+const paletteClose = getRequiredElement<HTMLButtonElement>('#palette-close')
+const paletteSearch = getRequiredElement<HTMLInputElement>('#palette-search')
+const paletteTabs = getRequiredElement<HTMLDivElement>('#palette-tabs')
+const paletteGrid = getRequiredElement<HTMLDivElement>('#palette-grid')
 
 const hotbarButtons = Array.from(hotbar.querySelectorAll<HTMLButtonElement>('.hotbar-slot'))
+const paletteButtons = Array.from(paletteGrid.querySelectorAll<HTMLButtonElement>('.palette-block'))
+const paletteTabButtons = Array.from(paletteTabs.querySelectorAll<HTMLButtonElement>('.palette-tab'))
 
 const renderer = new WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -126,12 +190,7 @@ const cameraRig = new Group()
 cameraRig.add(camera)
 scene.add(cameraRig)
 
-const ambientLight = new AmbientLight(0xffffff, 1.7)
-scene.add(ambientLight)
-
-const sun = new DirectionalLight(0xfff3d4, 1.8)
-sun.position.set(24, 48, 16)
-scene.add(sun)
+const lighting = configureLighting(renderer, scene)
 
 const world = new VoxelWorld(scene)
 world.ensureChunksAround(camera.position.x, camera.position.z)
@@ -148,7 +207,8 @@ const selection = new Mesh(
 selection.visible = false
 scene.add(selection)
 
-const clock = new Clock()
+const timer = new Timer()
+timer.connect(document)
 const raycaster = new Raycaster()
 const centerScreen = new Vector2(0, 0)
 const lookEuler = new Euler(0, 0, 0, 'YXZ')
@@ -164,7 +224,14 @@ let pitch = 0
 let isFlying = true
 let isGrounded = false
 let verticalVelocity = 0
-let selectedBlockIndex = 0
+let selectedHotbarSlot = 0
+let isPaletteOpen = false
+let activePaletteCategory: BlockCategory | 'all' = 'all'
+let debugEnabled = false
+let fps = 0
+let frameMs = 0
+let fpsFrames = 0
+let fpsTime = 0
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -174,10 +241,36 @@ const flySpeed = 10
 const gravity = 24
 const jumpVelocity = 9
 
-const getSelectedBlock = () => PLACEABLE_BLOCKS[selectedBlockIndex]
+const debugOverlay = new DebugOverlay()
+
+const getSelectedBlock = () => getRequiredBlockDefinition(hotbarBlockIds[selectedHotbarSlot])
 
 const requestLock = () => {
-  renderer.domElement.requestPointerLock()
+  if (isPaletteOpen) {
+    return
+  }
+  const lockRequest = renderer.domElement.requestPointerLock()
+  if (lockRequest instanceof Promise) {
+    lockRequest.catch(() => undefined)
+  }
+}
+
+function syncLockScreen() {
+  lockScreen.classList.toggle('hidden', document.pointerLockElement === renderer.domElement || isPaletteOpen)
+}
+
+function setPaletteOpen(open: boolean) {
+  isPaletteOpen = open
+  paletteLayer.classList.toggle('hidden', !open)
+  paletteLayer.setAttribute('aria-hidden', String(!open))
+  syncLockScreen()
+
+  if (open) {
+    if (document.pointerLockElement === renderer.domElement) {
+      document.exitPointerLock()
+    }
+    paletteSearch.focus()
+  }
 }
 
 const resetPlayer = () => {
@@ -203,30 +296,45 @@ function updateCameraRotation() {
   camera.quaternion.setFromEuler(lookEuler)
 }
 
+function refreshHotbarButtons() {
+  hotbarButtons.forEach((button, index) => {
+    const block = getRequiredBlockDefinition(hotbarBlockIds[index])
+    const image = button.querySelector<HTMLImageElement>('img')
+    const name = button.querySelector<HTMLSpanElement>('.hotbar-name')
+
+    button.dataset.blockId = String(block.id)
+    button.setAttribute('aria-label', `快捷栏 ${index + 1}：${block.label}`)
+
+    if (image) {
+      image.src = `${assetBase}${block.iconPath}`
+      image.alt = block.label
+    }
+    if (name) {
+      name.textContent = block.label
+    }
+  })
+}
+
 function updateHotbarSelection() {
   const selectedBlock = getSelectedBlock()
+  refreshHotbarButtons()
 
   for (const button of hotbarButtons) {
-    const blockId = Number(button.dataset.blockId)
-    button.classList.toggle('is-selected', blockId === selectedBlock.id)
+    const slotIndex = Number(button.dataset.slotIndex)
+    button.classList.toggle('is-selected', slotIndex === selectedHotbarSlot)
   }
 
   hotbarLabel.textContent = `当前方块：${selectedBlock.label}`
 }
 
-function setSelectedBlock(block: PlaceableBlockDefinition) {
-  const nextIndex = PLACEABLE_BLOCKS.findIndex((entry) => entry.id === block.id)
-  if (nextIndex === -1) {
-    return
-  }
-
-  selectedBlockIndex = nextIndex
+function assignBlockToSelectedSlot(block: BlockDefinition) {
+  hotbarBlockIds[selectedHotbarSlot] = block.id
   updateHotbarSelection()
 }
 
 function setSelectedBlockByIndex(index: number) {
-  const normalizedIndex = ((index % PLACEABLE_BLOCKS.length) + PLACEABLE_BLOCKS.length) % PLACEABLE_BLOCKS.length
-  selectedBlockIndex = normalizedIndex
+  const normalizedIndex = ((index % hotbarBlockIds.length) + hotbarBlockIds.length) % hotbarBlockIds.length
+  selectedHotbarSlot = normalizedIndex
   updateHotbarSelection()
 }
 
@@ -317,6 +425,35 @@ function refreshHud() {
   worldLine.textContent = `区块：${world.getLoadedChunkCount()} | 方块：${world.getLoadedBlockCount()}`
 }
 
+function updatePaletteFilter() {
+  const query = paletteSearch.value.trim().toLowerCase()
+
+  for (const button of paletteButtons) {
+    const block = getRequiredBlockDefinition(Number(button.dataset.blockId) as BlockId)
+    const matchesCategory = activePaletteCategory === 'all' || block.category === activePaletteCategory
+    const matchesQuery =
+      query.length === 0 || block.label.toLowerCase().includes(query) || block.key.toLowerCase().includes(query)
+
+    button.classList.toggle('hidden', !matchesCategory || !matchesQuery)
+  }
+
+  for (const button of paletteTabButtons) {
+    button.classList.toggle('is-selected', button.dataset.category === activePaletteCategory)
+  }
+}
+
+function updatePerf(deltaTime: number) {
+  frameMs = deltaTime * 1000
+  fpsFrames += 1
+  fpsTime += deltaTime
+
+  if (fpsTime >= 0.25) {
+    fps = fpsFrames / fpsTime
+    fpsFrames = 0
+    fpsTime = 0
+  }
+}
+
 function updateSelection() {
   raycaster.setFromCamera(centerScreen, camera)
   const hit = world.raycast(raycaster)
@@ -331,8 +468,22 @@ function updateSelection() {
   return hit
 }
 
+type WorldRaycastHit = NonNullable<ReturnType<typeof updateSelection>>
+
+function formatTarget(hit: WorldRaycastHit | null) {
+  if (!hit) {
+    return '-'
+  }
+
+  const face = `${hit.normal.x >= 0 ? '+' : ''}${hit.normal.x},${hit.normal.y >= 0 ? '+' : ''}${hit.normal.y},${
+    hit.normal.z >= 0 ? '+' : ''
+  }${hit.normal.z}`
+
+  return `${getBlockLabel(hit.blockId)} @ ${hit.block.x},${hit.block.y},${hit.block.z} face ${face} dist ${hit.distance.toFixed(1)}`
+}
+
 function placeOrRemoveBlock(place: boolean) {
-  if (document.pointerLockElement !== renderer.domElement) {
+  if (isPaletteOpen || document.pointerLockElement !== renderer.domElement) {
     return
   }
 
@@ -400,17 +551,35 @@ function updateMovement(deltaTime: number) {
   moveWithCollisions(new Vector3(horizontalDelta.x, verticalVelocity * deltaTime, horizontalDelta.z))
 }
 
-function animate() {
-  const deltaTime = Math.min(clock.getDelta(), 0.05)
+function animate(timestamp?: number) {
+  timer.update(timestamp)
+  const deltaTime = Math.min(timer.getDelta(), 0.05)
+  updatePerf(deltaTime)
 
   if (document.pointerLockElement === renderer.domElement) {
     updateMovement(deltaTime)
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
 
-  updateSelection()
+  const hit = updateSelection()
   refreshHud()
   renderer.render(scene, camera)
+  debugOverlay.update({
+    enabled: debugEnabled,
+    fps,
+    frameMs,
+    mode: isFlying ? 'Flying' : `Walking ${isGrounded ? 'grounded' : 'airborne'}`,
+    selectedBlock: getSelectedBlock().label,
+    target: formatTarget(hit),
+    yaw,
+    pitch,
+    camera,
+    renderer,
+    world,
+    shadowEnabled: lighting.shadowEnabled,
+    shadowMapSize: lighting.shadowMapSize,
+    postFxEnabled: lighting.postFxEnabled,
+  })
   requestAnimationFrame(animate)
 }
 
@@ -426,13 +595,39 @@ document.addEventListener('mousemove', (event) => {
 })
 
 document.addEventListener('pointerlockchange', () => {
-  lockScreen.classList.toggle('hidden', document.pointerLockElement === renderer.domElement)
+  syncLockScreen()
 })
 
 window.addEventListener('keydown', (event) => {
+  const isEditableTarget =
+    event.target instanceof HTMLInputElement ||
+    event.target instanceof HTMLTextAreaElement ||
+    event.target instanceof HTMLSelectElement
+
+  if (!isEditableTarget && (event.code === 'F3' || event.code === 'Backquote') && !event.repeat) {
+    debugEnabled = !debugEnabled
+    debugOverlay.setVisible(debugEnabled)
+    event.preventDefault()
+    return
+  }
+
+  if (!isEditableTarget && event.code === 'KeyE' && !event.repeat) {
+    setPaletteOpen(!isPaletteOpen)
+    event.preventDefault()
+    return
+  }
+
+  if (isPaletteOpen) {
+    if (event.code === 'Escape') {
+      setPaletteOpen(false)
+      event.preventDefault()
+    }
+    return
+  }
+
   if (/^Digit[1-9]$/.test(event.code)) {
     const index = Number(event.code.at(-1)) - 1
-    if (index < PLACEABLE_BLOCKS.length) {
+    if (index < hotbarBlockIds.length) {
       setSelectedBlockByIndex(index)
       event.preventDefault()
     }
@@ -469,10 +664,9 @@ hotbar.addEventListener('click', (event) => {
     return
   }
 
-  const blockId = Number(button.dataset.blockId)
-  const block = PLACEABLE_BLOCKS.find((entry) => entry.id === blockId)
-  if (block) {
-    setSelectedBlock(block)
+  const slotIndex = Number(button.dataset.slotIndex)
+  if (Number.isInteger(slotIndex)) {
+    setSelectedBlockByIndex(slotIndex)
   }
 })
 
@@ -482,11 +676,53 @@ hotbar.addEventListener(
     event.preventDefault()
     const delta = Math.sign(event.deltaY)
     if (delta !== 0) {
-      setSelectedBlockByIndex(selectedBlockIndex + delta)
+      setSelectedBlockByIndex(selectedHotbarSlot + delta)
     }
   },
   { passive: false },
 )
+
+paletteSearch.addEventListener('input', updatePaletteFilter)
+
+paletteTabs.addEventListener('click', (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+
+  const button = target.closest<HTMLButtonElement>('.palette-tab')
+  if (!button) {
+    return
+  }
+
+  activePaletteCategory = (button.dataset.category ?? 'all') as BlockCategory | 'all'
+  updatePaletteFilter()
+})
+
+paletteGrid.addEventListener('click', (event) => {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+
+  const button = target.closest<HTMLButtonElement>('.palette-block')
+  if (!button) {
+    return
+  }
+
+  const block = getBlockDefinition(Number(button.dataset.blockId) as BlockId)
+  if (!block) {
+    return
+  }
+
+  assignBlockToSelectedSlot(block)
+  setPaletteOpen(false)
+  requestLock()
+})
+
+paletteClose.addEventListener('click', () => {
+  setPaletteOpen(false)
+})
 
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (document.pointerLockElement !== renderer.domElement) {
@@ -517,4 +753,5 @@ window.addEventListener('resize', () => {
 
 resetPlayer()
 updateHotbarSelection()
+updatePaletteFilter()
 animate()

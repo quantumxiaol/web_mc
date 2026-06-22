@@ -2,31 +2,21 @@ import {
   BoxGeometry,
   InstancedMesh,
   Matrix4,
-  MeshLambertMaterial,
-  NearestFilter,
-  NearestMipmapNearestFilter,
+  MeshStandardMaterial,
   Raycaster,
   Scene,
-  SRGBColorSpace,
-  Texture,
-  TextureLoader,
 } from 'three'
+import {
+  BlockId,
+  PLACEABLE_BLOCKS,
+  isBlockSolid,
+  type BlockDefinition,
+} from './blocks'
+import { createBlockMaterials } from './materials'
 
 export const CHUNK_SIZE = 16
 export const WORLD_HEIGHT = 16
-const LOAD_RADIUS = 2
-const assetBase = import.meta.env.BASE_URL
-
-export const BlockId = {
-  Air: 0,
-  Grass: 1,
-  Dirt: 2,
-  Stone: 3,
-  Sand: 4,
-  Wood: 5,
-} as const
-
-export type BlockId = (typeof BlockId)[keyof typeof BlockId]
+export const LOAD_RADIUS = 2
 
 export interface BlockPosition {
   x: number
@@ -34,82 +24,20 @@ export interface BlockPosition {
   z: number
 }
 
-export interface PlaceableBlockDefinition {
-  id: BlockId
-  label: string
-  iconPath: string
-}
+export type PlaceableBlockDefinition = BlockDefinition
 
 interface Chunk {
   cx: number
   cz: number
   data: Uint8Array
-  meshes: InstancedMesh<BoxGeometry, MeshLambertMaterial[]>[]
+  meshes: InstancedMesh<BoxGeometry, MeshStandardMaterial[]>[]
   instancesByBlock: Partial<Record<BlockId, BlockPosition[]>>
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
-const textureLoader = new TextureLoader()
-
-const loadVoxelTexture = (path: string) => {
-  const texture = textureLoader.load(`${assetBase}${path}`)
-  texture.colorSpace = SRGBColorSpace
-  texture.magFilter = NearestFilter
-  texture.minFilter = NearestMipmapNearestFilter
-  return texture
-}
-
-const createBlockMaterials = (side: Texture, top = side, bottom = side) => [
-  new MeshLambertMaterial({ map: side }),
-  new MeshLambertMaterial({ map: side }),
-  new MeshLambertMaterial({ map: top }),
-  new MeshLambertMaterial({ map: bottom }),
-  new MeshLambertMaterial({ map: side }),
-  new MeshLambertMaterial({ map: side }),
-]
-
-const grassTopTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/grass_top.png')
-const dirtTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/dirt.png')
-const grassSideTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/dirt_grass.png')
-const stoneTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/stone.png')
-const sandTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/sand.png')
-const woodTexture = loadVoxelTexture('kenney_voxel-pack/PNG/Tiles/wood.png')
-
-const blockMaterialMap: Partial<Record<BlockId, MeshLambertMaterial[]>> = {
-  [BlockId.Grass]: createBlockMaterials(grassSideTexture, grassTopTexture, dirtTexture),
-  [BlockId.Dirt]: createBlockMaterials(dirtTexture),
-  [BlockId.Stone]: createBlockMaterials(stoneTexture),
-  [BlockId.Sand]: createBlockMaterials(sandTexture),
-  [BlockId.Wood]: createBlockMaterials(woodTexture),
-}
-
-export const PLACEABLE_BLOCKS: PlaceableBlockDefinition[] = [
-  {
-    id: BlockId.Grass,
-    label: '草方块',
-    iconPath: 'kenney_voxel-pack/PNG/Tiles/grass_top.png',
-  },
-  {
-    id: BlockId.Dirt,
-    label: '泥土',
-    iconPath: 'kenney_voxel-pack/PNG/Tiles/dirt.png',
-  },
-  {
-    id: BlockId.Stone,
-    label: '石头',
-    iconPath: 'kenney_voxel-pack/PNG/Tiles/stone.png',
-  },
-  {
-    id: BlockId.Sand,
-    label: '沙子',
-    iconPath: 'kenney_voxel-pack/PNG/Tiles/sand.png',
-  },
-  {
-    id: BlockId.Wood,
-    label: '木块',
-    iconPath: 'kenney_voxel-pack/PNG/Tiles/wood.png',
-  },
-]
+const blockMaterialMap = new Map<BlockId, MeshStandardMaterial[]>(
+  PLACEABLE_BLOCKS.map((definition) => [definition.id, createBlockMaterials(definition)] as const),
+)
 
 const instanceMatrix = new Matrix4()
 
@@ -122,9 +50,64 @@ const mod = (value: number, size: number) => ((value % size) + size) % size
 const blockIndex = (x: number, y: number, z: number) =>
   y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x
 
+const surfaceBlockFor = (worldX: number, worldZ: number, height: number): BlockId => {
+  const warmth = Math.sin(worldX * 0.045) + Math.cos(worldZ * 0.04)
+  const moisture = Math.sin((worldX - worldZ) * 0.034)
+
+  if (height >= 6 || warmth < -1.1) {
+    return BlockId.Snow
+  }
+
+  if (warmth > 1.15) {
+    return moisture > 0.4 ? BlockId.RedSand : BlockId.Sand
+  }
+
+  if (moisture < -0.72) {
+    return BlockId.GreySand
+  }
+
+  return BlockId.Grass
+}
+
+const soilBlockFor = (surfaceBlock: BlockId): BlockId => {
+  if (surfaceBlock === BlockId.Sand || surfaceBlock === BlockId.RedSand || surfaceBlock === BlockId.GreySand) {
+    return surfaceBlock
+  }
+
+  if (surfaceBlock === BlockId.Snow) {
+    return BlockId.GravelDirt
+  }
+
+  return BlockId.Dirt
+}
+
+const stoneBlockFor = (worldX: number, worldY: number, worldZ: number): BlockId => {
+  const oreNoise = Math.abs(
+    Math.sin(worldX * 12.9898 + worldY * 78.233 + worldZ * 37.719) * 43758.5453,
+  ) % 1
+
+  if (worldY <= 2 && oreNoise > 0.992) {
+    return BlockId.StoneDiamond
+  }
+  if (worldY <= 3 && oreNoise > 0.986) {
+    return BlockId.GreystoneRuby
+  }
+  if (worldY <= 4 && oreNoise > 0.976) {
+    return BlockId.StoneGold
+  }
+  if (worldY <= 5 && oreNoise > 0.958) {
+    return BlockId.StoneIron
+  }
+  if (oreNoise > 0.935) {
+    return BlockId.StoneCoal
+  }
+
+  return BlockId.Stone
+}
+
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
-  private readonly raycastTargets: InstancedMesh<BoxGeometry, MeshLambertMaterial[]>[] = []
+  private readonly raycastTargets: InstancedMesh<BoxGeometry, MeshStandardMaterial[]>[] = []
   private readonly scene: Scene
 
   constructor(scene: Scene) {
@@ -181,11 +164,14 @@ export class VoxelWorld {
 
     const lx = mod(worldX, CHUNK_SIZE)
     const lz = mod(worldZ, CHUNK_SIZE)
-    return chunk.data[blockIndex(lx, worldY, lz)] ?? BlockId.Air
+    return (chunk.data[blockIndex(lx, worldY, lz)] ?? BlockId.Air) as BlockId
   }
 
   setBlock(worldX: number, worldY: number, worldZ: number, blockId: BlockId) {
     if (worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return false
+    }
+    if (blockId !== BlockId.Air && !blockMaterialMap.has(blockId)) {
       return false
     }
 
@@ -223,7 +209,7 @@ export class VoxelWorld {
     for (let y = startY; y <= endY; y += 1) {
       for (let z = startZ; z <= endZ; z += 1) {
         for (let x = startX; x <= endX; x += 1) {
-          if (this.getBlock(x, y, z) !== BlockId.Air) {
+          if (isBlockSolid(this.getBlock(x, y, z))) {
             return true
           }
         }
@@ -240,7 +226,7 @@ export class VoxelWorld {
       return null
     }
 
-    const mesh = hit.object as InstancedMesh<BoxGeometry, MeshLambertMaterial[]>
+    const mesh = hit.object as InstancedMesh<BoxGeometry, MeshStandardMaterial[]>
     const key = mesh.userData.chunkKey as string | undefined
     const blockId = mesh.userData.blockId as BlockId | undefined
     if (!key || blockId === undefined) {
@@ -314,15 +300,16 @@ export class VoxelWorld {
           Math.sin(worldX * 0.17) * 1.4 +
           Math.cos(worldZ * 0.12) * 1.3 +
           Math.sin((worldX + worldZ) * 0.08) * 0.9
-        const height = Math.max(1, Math.min(6, Math.round(2 + ridge)))
-        const topBlock = height <= 2 ? BlockId.Sand : BlockId.Grass
+        const height = Math.max(1, Math.min(7, Math.round(3 + ridge)))
+        const topBlock = surfaceBlockFor(worldX, worldZ, height)
+        const soilBlock = soilBlockFor(topBlock)
 
         for (let y = 0; y <= height; y += 1) {
-          let blockId: BlockId = BlockId.Stone
+          let blockId = stoneBlockFor(worldX, y, worldZ)
           if (y === height) {
             blockId = topBlock
           } else if (y >= height - 2) {
-            blockId = topBlock === BlockId.Sand ? BlockId.Sand : BlockId.Dirt
+            blockId = soilBlock
           }
           data[blockIndex(lx, y, lz)] = blockId
         }
@@ -356,14 +343,14 @@ export class VoxelWorld {
 
     for (const definition of PLACEABLE_BLOCKS) {
       const instances = chunk.instancesByBlock[definition.id]
-      const materials = blockMaterialMap[definition.id]
+      const materials = blockMaterialMap.get(definition.id)
       if (!instances || instances.length === 0 || !materials) {
         continue
       }
 
       const mesh = new InstancedMesh(blockGeometry, materials, instances.length)
-      mesh.castShadow = false
-      mesh.receiveShadow = true
+      mesh.castShadow = definition.solid && definition.materialKind !== 'transparent' && definition.materialKind !== 'liquid'
+      mesh.receiveShadow = definition.materialKind !== 'liquid'
       mesh.userData.chunkKey = chunkKey(chunk.cx, chunk.cz)
       mesh.userData.blockId = definition.id
 
