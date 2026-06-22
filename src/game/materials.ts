@@ -9,9 +9,12 @@ import {
 } from 'three'
 import type { BlockDefinition } from './blocks'
 
+export type BlockMaterial = MeshStandardMaterial | MeshStandardMaterial[]
+
 const assetBase = import.meta.env.BASE_URL
 const textureLoader = new TextureLoader()
 const textureCache = new Map<string, Texture>()
+const materialCache = new Map<string, MeshStandardMaterial>()
 
 const loadVoxelTexture = (path: string) => {
   const cached = textureCache.get(path)
@@ -27,7 +30,24 @@ const loadVoxelTexture = (path: string) => {
   return texture
 }
 
-const createFaceMaterial = (definition: BlockDefinition, texture: Texture) => {
+const materialCacheKey = (definition: BlockDefinition, texturePath: string) =>
+  [
+    definition.key,
+    definition.materialKind,
+    texturePath,
+    definition.opacity ?? '',
+    definition.emissiveColor ?? '',
+    definition.emitsLight ?? '',
+  ].join('|')
+
+const createFaceMaterial = (definition: BlockDefinition, texturePath: string) => {
+  const cacheKey = materialCacheKey(definition, texturePath)
+  const cached = materialCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
+  const texture = loadVoxelTexture(texturePath)
   const material = new MeshStandardMaterial({
     map: texture,
     roughness: definition.materialKind === 'liquid' ? 0.35 : 0.86,
@@ -51,20 +71,22 @@ const createFaceMaterial = (definition: BlockDefinition, texture: Texture) => {
     material.emissiveIntensity = definition.emitsLight ?? 0.45
   }
 
+  materialCache.set(cacheKey, material)
   return material
 }
 
-export const createBlockMaterials = (definition: BlockDefinition) => {
-  const side = loadVoxelTexture(definition.textures.side)
-  const top = definition.textures.top ? loadVoxelTexture(definition.textures.top) : side
-  const bottom = definition.textures.bottom ? loadVoxelTexture(definition.textures.bottom) : side
+export const createBlockMaterials = (definition: BlockDefinition): BlockMaterial => {
+  const sidePath = definition.textures.side
+  const topPath = definition.textures.top ?? sidePath
+  const bottomPath = definition.textures.bottom ?? sidePath
 
-  return [
-    createFaceMaterial(definition, side),
-    createFaceMaterial(definition, side),
-    createFaceMaterial(definition, top),
-    createFaceMaterial(definition, bottom),
-    createFaceMaterial(definition, side),
-    createFaceMaterial(definition, side),
-  ]
+  if (sidePath === topPath && sidePath === bottomPath) {
+    return createFaceMaterial(definition, sidePath)
+  }
+
+  const side = createFaceMaterial(definition, sidePath)
+  const top = createFaceMaterial(definition, topPath)
+  const bottom = createFaceMaterial(definition, bottomPath)
+
+  return [side, side, top, bottom, side, side]
 }

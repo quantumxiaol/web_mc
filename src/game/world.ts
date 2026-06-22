@@ -2,17 +2,20 @@ import {
   BoxGeometry,
   InstancedMesh,
   Matrix4,
-  MeshStandardMaterial,
   Raycaster,
   Scene,
 } from 'three'
 import {
   BlockId,
   PLACEABLE_BLOCKS,
+  getBlockRenderLayer,
+  isBlockOpaqueOccluder,
+  isBlockRaycastTarget,
   isBlockSolid,
   type BlockDefinition,
+  type BlockRenderLayer,
 } from './blocks'
-import { createBlockMaterials } from './materials'
+import { createBlockMaterials, type BlockMaterial } from './materials'
 
 export const CHUNK_SIZE = 16
 export const WORLD_HEIGHT = 16
@@ -26,16 +29,27 @@ export interface BlockPosition {
 
 export type PlaceableBlockDefinition = BlockDefinition
 
+type ChunkMesh = InstancedMesh<BoxGeometry, BlockMaterial>
+
+export interface WorldMeshStats {
+  total: number
+  opaque: number
+  cutout: number
+  transparent: number
+  liquid: number
+  emissive: number
+}
+
 interface Chunk {
   cx: number
   cz: number
   data: Uint8Array
-  meshes: InstancedMesh<BoxGeometry, MeshStandardMaterial[]>[]
+  meshes: ChunkMesh[]
   instancesByBlock: Partial<Record<BlockId, BlockPosition[]>>
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
-const blockMaterialMap = new Map<BlockId, MeshStandardMaterial[]>(
+const blockMaterialMap = new Map<BlockId, BlockMaterial>(
   PLACEABLE_BLOCKS.map((definition) => [definition.id, createBlockMaterials(definition)] as const),
 )
 
@@ -49,6 +63,14 @@ const mod = (value: number, size: number) => ((value % size) + size) % size
 
 const blockIndex = (x: number, y: number, z: number) =>
   y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x
+
+const renderOrderByLayer: Record<BlockRenderLayer, number> = {
+  opaque: 0,
+  cutout: 1,
+  emissive: 1,
+  transparent: 2,
+  liquid: 3,
+}
 
 const surfaceBlockFor = (worldX: number, worldZ: number, height: number): BlockId => {
   const warmth = Math.sin(worldX * 0.045) + Math.cos(worldZ * 0.04)
@@ -107,7 +129,8 @@ const stoneBlockFor = (worldX: number, worldY: number, worldZ: number): BlockId 
 
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
-  private readonly raycastTargets: InstancedMesh<BoxGeometry, MeshStandardMaterial[]>[] = []
+  private readonly dirtyChunks = new Set<string>()
+  private readonly raycastTargets: ChunkMesh[] = []
   private readonly scene: Scene
 
   constructor(scene: Scene) {
@@ -143,11 +166,47 @@ export class VoxelWorld {
   getLoadedBlockCount() {
     let total = 0
     for (const chunk of this.chunks.values()) {
-      for (const blockId of PLACEABLE_BLOCKS) {
-        total += chunk.instancesByBlock[blockId.id]?.length ?? 0
+      for (const blockId of chunk.data) {
+        if (blockId !== BlockId.Air) {
+          total += 1
+        }
       }
     }
     return total
+  }
+
+  getRenderedBlockCount() {
+    let total = 0
+    for (const chunk of this.chunks.values()) {
+      for (const instances of Object.values(chunk.instancesByBlock)) {
+        total += instances?.length ?? 0
+      }
+    }
+    return total
+  }
+
+  getMeshStats(): WorldMeshStats {
+    const stats: WorldMeshStats = {
+      total: 0,
+      opaque: 0,
+      cutout: 0,
+      transparent: 0,
+      liquid: 0,
+      emissive: 0,
+    }
+
+    for (const chunk of this.chunks.values()) {
+      for (const mesh of chunk.meshes) {
+        const layer = mesh.userData.renderLayer as BlockRenderLayer | undefined
+        stats.total += 1
+
+        if (layer) {
+          stats[layer] += 1
+        }
+      }
+    }
+
+    return stats
   }
 
   getBlock(worldX: number, worldY: number, worldZ: number) {
@@ -187,8 +246,42 @@ export class VoxelWorld {
     }
 
     chunk.data[index] = blockId
-    this.rebuildChunkMesh(chunk)
+    this.markChunkDirty(cx, cz)
+
+    if (lx === 0) {
+      this.markChunkDirty(cx - 1, cz)
+    }
+    if (lx === CHUNK_SIZE - 1) {
+      this.markChunkDirty(cx + 1, cz)
+    }
+    if (lz === 0) {
+      this.markChunkDirty(cx, cz - 1)
+    }
+    if (lz === CHUNK_SIZE - 1) {
+      this.markChunkDirty(cx, cz + 1)
+    }
+
     return true
+  }
+
+  rebuildDirtyChunks(maxPerFrame = 2) {
+    let rebuilt = 0
+
+    for (const key of this.dirtyChunks) {
+      const chunk = this.chunks.get(key)
+      this.dirtyChunks.delete(key)
+
+      if (chunk) {
+        this.rebuildChunkMesh(chunk)
+        rebuilt += 1
+      }
+
+      if (rebuilt >= maxPerFrame) {
+        break
+      }
+    }
+
+    return rebuilt
   }
 
   intersectsSolid(
@@ -226,7 +319,7 @@ export class VoxelWorld {
       return null
     }
 
-    const mesh = hit.object as InstancedMesh<BoxGeometry, MeshStandardMaterial[]>
+    const mesh = hit.object as ChunkMesh
     const key = mesh.userData.chunkKey as string | undefined
     const blockId = mesh.userData.blockId as BlockId | undefined
     if (!key || blockId === undefined) {
@@ -252,6 +345,29 @@ export class VoxelWorld {
     }
   }
 
+  private markChunkDirty(cx: number, cz: number) {
+    this.dirtyChunks.add(chunkKey(cx, cz))
+  }
+
+  private isBlockVisible(worldX: number, worldY: number, worldZ: number) {
+    const neighbors = [
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ] as const
+
+    for (const [dx, dy, dz] of neighbors) {
+      if (!isBlockOpaqueOccluder(this.getBlock(worldX + dx, worldY + dy, worldZ + dz))) {
+        return true
+      }
+    }
+
+    return false
+  }
+
   private loadChunk(cx: number, cz: number) {
     const key = chunkKey(cx, cz)
     const cached = this.chunks.get(key)
@@ -274,6 +390,7 @@ export class VoxelWorld {
 
   private unloadChunk(key: string, chunk: Chunk) {
     this.removeChunkMeshes(chunk)
+    this.dirtyChunks.delete(key)
     this.chunks.delete(key)
   }
 
@@ -331,11 +448,17 @@ export class VoxelWorld {
             continue
           }
 
+          const worldX = chunk.cx * CHUNK_SIZE + x
+          const worldZ = chunk.cz * CHUNK_SIZE + z
+          if (!this.isBlockVisible(worldX, y, worldZ)) {
+            continue
+          }
+
           const instances = (chunk.instancesByBlock[blockId] ??= [])
           instances.push({
-            x: chunk.cx * CHUNK_SIZE + x,
+            x: worldX,
             y,
-            z: chunk.cz * CHUNK_SIZE + z,
+            z: worldZ,
           })
         }
       }
@@ -349,10 +472,14 @@ export class VoxelWorld {
       }
 
       const mesh = new InstancedMesh(blockGeometry, materials, instances.length)
-      mesh.castShadow = definition.solid && definition.materialKind !== 'transparent' && definition.materialKind !== 'liquid'
-      mesh.receiveShadow = definition.materialKind !== 'liquid'
+      const renderLayer = getBlockRenderLayer(definition.id)
+      mesh.castShadow =
+        definition.solid && renderLayer !== 'transparent' && renderLayer !== 'liquid'
+      mesh.receiveShadow = renderLayer !== 'liquid'
+      mesh.renderOrder = renderOrderByLayer[renderLayer]
       mesh.userData.chunkKey = chunkKey(chunk.cx, chunk.cz)
       mesh.userData.blockId = definition.id
+      mesh.userData.renderLayer = renderLayer
 
       for (let index = 0; index < instances.length; index += 1) {
         const block = instances[index]
@@ -362,7 +489,9 @@ export class VoxelWorld {
 
       mesh.instanceMatrix.needsUpdate = true
       this.scene.add(mesh)
-      this.raycastTargets.push(mesh)
+      if (isBlockRaycastTarget(definition.id)) {
+        this.raycastTargets.push(mesh)
+      }
       chunk.meshes.push(mesh)
     }
   }

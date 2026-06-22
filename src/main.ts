@@ -21,10 +21,12 @@ import {
   PLACEABLE_BLOCKS,
   getBlockDefinition,
   getBlockLabel,
+  isBlockReplaceable,
   type BlockCategory,
   type BlockDefinition,
 } from './game/blocks'
 import { DebugOverlay } from './game/debugOverlay'
+import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
 import { VoxelWorld } from './game/world'
 
@@ -37,6 +39,8 @@ if (!app) {
 const assetBase = import.meta.env.BASE_URL
 const HOTBAR_SIZE = Math.min(9, PLACEABLE_BLOCKS.length)
 const hotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
+let graphicsPreset: GraphicsPreset = 'medium'
+let graphicsSettings = GRAPHICS_PRESETS[graphicsPreset]
 
 function getRequiredElement<T extends Element>(selector: string) {
   const element = document.querySelector<T>(selector)
@@ -119,6 +123,7 @@ app.innerHTML = `
         <span>滚轮切换槽位</span>
         <span>E 方块面板</span>
         <span>F3/\` 调试</span>
+        <span>F4/P 图形档位</span>
         <span>G 切换飞行/步行</span>
         <span>R 重置位置</span>
         <span>Esc 解锁鼠标</span>
@@ -174,7 +179,7 @@ const paletteButtons = Array.from(paletteGrid.querySelectorAll<HTMLButtonElement
 const paletteTabButtons = Array.from(paletteTabs.querySelectorAll<HTMLButtonElement>('.palette-tab'))
 
 const renderer = new WebGLRenderer({ antialias: true })
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
 renderer.setSize(window.innerWidth, window.innerHeight)
 renderer.setClearColor(0xb8dcff)
 viewport.append(renderer.domElement)
@@ -190,10 +195,18 @@ const cameraRig = new Group()
 cameraRig.add(camera)
 scene.add(cameraRig)
 
-const lighting = configureLighting(renderer, scene)
+const lighting = configureLighting(renderer, scene, graphicsSettings)
 
 const world = new VoxelWorld(scene)
 world.ensureChunksAround(camera.position.x, camera.position.z)
+
+function applyGraphicsPreset(preset: GraphicsPreset) {
+  graphicsPreset = preset
+  graphicsSettings = GRAPHICS_PRESETS[preset]
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  lighting.applyGraphicsSettings(graphicsSettings)
+}
 
 const selection = new Mesh(
   new BoxGeometry(1.02, 1.02, 1.02),
@@ -403,7 +416,7 @@ function moveWithCollisions(delta: Vector3) {
 }
 
 function canPlaceBlock(x: number, y: number, z: number) {
-  if (world.getBlock(x, y, z) !== BlockId.Air) {
+  if (!isBlockReplaceable(world.getBlock(x, y, z))) {
     return false
   }
 
@@ -422,7 +435,7 @@ function refreshHud() {
   const mode = isFlying ? '飞行' : `步行${isGrounded ? '（落地）' : '（空中）'}`
   modeLine.textContent = `模式：${mode}`
   coordsLine.textContent = `坐标：${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}`
-  worldLine.textContent = `区块：${world.getLoadedChunkCount()} | 方块：${world.getLoadedBlockCount()}`
+  worldLine.textContent = `区块：${world.getLoadedChunkCount()} | 方块：${world.getLoadedBlockCount()} | 可见：${world.getRenderedBlockCount()}`
 }
 
 function updatePaletteFilter() {
@@ -561,6 +574,8 @@ function animate(timestamp?: number) {
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
 
+  world.rebuildDirtyChunks(2)
+  lighting.update(camera.position)
   const hit = updateSelection()
   refreshHud()
   renderer.render(scene, camera)
@@ -576,6 +591,9 @@ function animate(timestamp?: number) {
     camera,
     renderer,
     world,
+    graphicsPreset,
+    maxPixelRatio: graphicsSettings.maxPixelRatio,
+    bloomConfigured: graphicsSettings.bloom,
     shadowEnabled: lighting.shadowEnabled,
     shadowMapSize: lighting.shadowMapSize,
     postFxEnabled: lighting.postFxEnabled,
@@ -604,9 +622,26 @@ window.addEventListener('keydown', (event) => {
     event.target instanceof HTMLTextAreaElement ||
     event.target instanceof HTMLSelectElement
 
-  if (!isEditableTarget && (event.code === 'F3' || event.code === 'Backquote') && !event.repeat) {
+  if (
+    !isEditableTarget &&
+    (event.code === 'F3' || event.key === 'F3' || event.code === 'Backquote') &&
+    !event.repeat
+  ) {
     debugEnabled = !debugEnabled
     debugOverlay.setVisible(debugEnabled)
+    event.preventDefault()
+    return
+  }
+
+  if (
+    !isEditableTarget &&
+    (event.code === 'F4' ||
+      event.key === 'F4' ||
+      event.code === 'KeyP' ||
+      event.key.toLowerCase() === 'p') &&
+    !event.repeat
+  ) {
+    applyGraphicsPreset(nextGraphicsPreset(graphicsPreset))
     event.preventDefault()
     return
   }
@@ -747,8 +782,8 @@ startButton.addEventListener('click', requestLock)
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
   renderer.setSize(window.innerWidth, window.innerHeight)
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
 })
 
 resetPlayer()

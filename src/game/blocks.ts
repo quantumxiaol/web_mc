@@ -40,6 +40,8 @@ export type BlockId = (typeof BlockId)[keyof typeof BlockId]
 
 export type BlockMaterialKind = 'opaque' | 'alphaTest' | 'transparent' | 'emissive' | 'liquid'
 
+export type BlockRenderLayer = 'opaque' | 'cutout' | 'transparent' | 'liquid' | 'emissive'
+
 export const BLOCK_CATEGORIES = [
   { id: 'terrain', label: '地形' },
   { id: 'building', label: '建筑' },
@@ -59,10 +61,13 @@ export interface BlockDefinition {
   solid: boolean
   transparent?: boolean
   liquid?: boolean
+  replaceable?: boolean
+  selectable?: boolean
   emitsLight?: number
   emissiveColor?: number
   opacity?: number
   materialKind: BlockMaterialKind
+  renderLayer?: BlockRenderLayer
   textures: {
     side: string
     top?: string
@@ -167,6 +172,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     transparent: true,
     opacity: 0.72,
     materialKind: 'transparent',
+    renderLayer: 'transparent',
     textures: { side: tile('ice') },
   },
   {
@@ -249,6 +255,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     transparent: true,
     opacity: 0.55,
     materialKind: 'transparent',
+    renderLayer: 'transparent',
     textures: { side: tile('glass') },
   },
   {
@@ -308,6 +315,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: true,
     transparent: true,
     materialKind: 'alphaTest',
+    renderLayer: 'cutout',
     textures: { side: tile('leaves_transparent') },
   },
   {
@@ -319,6 +327,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: true,
     transparent: true,
     materialKind: 'alphaTest',
+    renderLayer: 'cutout',
     textures: { side: tile('leaves_orange_transparent') },
   },
   {
@@ -395,6 +404,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     emitsLight: 0.18,
     emissiveColor: 0x7ee7ff,
     materialKind: 'emissive',
+    renderLayer: 'emissive',
     textures: { side: tile('stone_diamond') },
   },
   {
@@ -407,6 +417,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     emitsLight: 0.2,
     emissiveColor: 0xff5d73,
     materialKind: 'emissive',
+    renderLayer: 'emissive',
     textures: { side: tile('greystone_ruby') },
   },
   {
@@ -419,6 +430,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     emitsLight: 0.24,
     emissiveColor: 0x79ff9f,
     materialKind: 'emissive',
+    renderLayer: 'emissive',
     textures: { side: tile('redstone_emerald') },
   },
   {
@@ -430,8 +442,10 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: false,
     transparent: true,
     liquid: true,
+    replaceable: true,
     opacity: 0.66,
     materialKind: 'liquid',
+    renderLayer: 'liquid',
     textures: { side: tile('water') },
   },
   {
@@ -441,10 +455,13 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     iconPath: tile('lava'),
     category: 'special',
     solid: false,
+    transparent: true,
     liquid: true,
+    replaceable: true,
     emitsLight: 1,
     emissiveColor: 0xff7a18,
     materialKind: 'emissive',
+    renderLayer: 'liquid',
     textures: { side: tile('lava') },
   },
 ]
@@ -464,3 +481,57 @@ export const getBlockLabel = (blockId: BlockId) => {
 }
 
 export const isBlockSolid = (blockId: BlockId) => getBlockDefinition(blockId)?.solid ?? false
+
+export const isBlockLiquid = (blockId: BlockId) => getBlockDefinition(blockId)?.liquid ?? false
+
+export const isBlockTransparent = (blockId: BlockId) =>
+  getBlockDefinition(blockId)?.transparent ?? false
+
+export const isBlockReplaceable = (blockId: BlockId) =>
+  blockId === BlockId.Air || (getBlockDefinition(blockId)?.replaceable ?? false)
+
+export const isBlockRaycastTarget = (blockId: BlockId) =>
+  getBlockDefinition(blockId)?.selectable ?? blockId !== BlockId.Air
+
+export const getBlockRenderLayer = (blockId: BlockId): BlockRenderLayer => {
+  const block = getBlockDefinition(blockId)
+
+  if (!block) {
+    return 'opaque'
+  }
+
+  if (block.renderLayer) {
+    return block.renderLayer
+  }
+
+  if (block.liquid) {
+    return 'liquid'
+  }
+
+  if (block.materialKind === 'alphaTest') {
+    return 'cutout'
+  }
+
+  if (block.materialKind === 'transparent') {
+    return 'transparent'
+  }
+
+  if (block.materialKind === 'emissive') {
+    return 'emissive'
+  }
+
+  return 'opaque'
+}
+
+export const isBlockOpaqueOccluder = (blockId: BlockId) => {
+  const block = getBlockDefinition(blockId)
+
+  return (
+    !!block &&
+    block.solid &&
+    !block.transparent &&
+    block.materialKind !== 'alphaTest' &&
+    block.materialKind !== 'transparent' &&
+    block.materialKind !== 'liquid'
+  )
+}

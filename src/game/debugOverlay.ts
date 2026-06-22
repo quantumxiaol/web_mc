@@ -1,4 +1,5 @@
 import type { PerspectiveCamera, WebGLRenderer } from 'three'
+import type { GraphicsPreset } from './graphicsSettings'
 import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT, type VoxelWorld } from './world'
 
 export interface DebugOverlayState {
@@ -13,6 +14,9 @@ export interface DebugOverlayState {
   camera: PerspectiveCamera
   renderer: WebGLRenderer
   world: VoxelWorld
+  graphicsPreset: GraphicsPreset
+  maxPixelRatio: number
+  bloomConfigured: boolean
   shadowEnabled: boolean
   shadowMapSize: number
   postFxEnabled: boolean
@@ -45,6 +49,7 @@ export class DebugOverlay {
     const chunkX = Math.floor(Math.floor(position.x) / CHUNK_SIZE)
     const chunkZ = Math.floor(Math.floor(position.z) / CHUNK_SIZE)
     const actualDpr = window.innerWidth > 0 ? canvas.width / window.innerWidth : window.devicePixelRatio
+    const meshStats = state.world.getMeshStats()
 
     this.el.textContent = [
       'WebMC Debug',
@@ -62,16 +67,23 @@ export class DebugOverlay {
       'World:',
       `Loaded chunks: ${state.world.getLoadedChunkCount()}`,
       `Loaded blocks: ${state.world.getLoadedBlockCount()}`,
+      `Rendered blocks: ${state.world.getRenderedBlockCount()}`,
       `Chunk size: ${CHUNK_SIZE}`,
       `World height: ${WORLD_HEIGHT}`,
       `Load radius: ${LOAD_RADIUS}`,
+      `Meshes: ${meshStats.total} | opaque ${meshStats.opaque} | cutout ${meshStats.cutout} | transparent ${meshStats.transparent} | liquid ${meshStats.liquid} | emissive ${meshStats.emissive}`,
+      '',
+      'Graphics:',
+      `Preset: ${state.graphicsPreset}`,
+      `Max pixel ratio: ${state.maxPixelRatio.toFixed(2)}`,
+      `Shadow: ${state.shadowEnabled ? `on ${state.shadowMapSize}` : 'off'}`,
+      `Bloom setting: ${state.bloomConfigured ? 'on' : 'off'}`,
       '',
       'Renderer:',
       `Draw calls: ${info.render.calls}`,
       `Triangles: ${info.render.triangles}`,
       `Geometries: ${info.memory.geometries}`,
       `Textures: ${info.memory.textures}`,
-      `Shadow: ${state.shadowEnabled ? `on ${state.shadowMapSize}` : 'off'}`,
       `PostFX: ${state.postFxEnabled ? 'on' : 'off'}`,
     ].join('\n')
   }
