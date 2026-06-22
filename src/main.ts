@@ -37,9 +37,52 @@ if (!app) {
 }
 
 const assetBase = import.meta.env.BASE_URL
+const GRAPHICS_PRESET_STORAGE_KEY = 'web_mc:graphicsPreset'
+const HOTBAR_STORAGE_KEY = 'web_mc:hotbar'
 const HOTBAR_SIZE = Math.min(9, PLACEABLE_BLOCKS.length)
-const hotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
-let graphicsPreset: GraphicsPreset = 'medium'
+const defaultHotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
+const placeableBlockIds = new Set<BlockId>(PLACEABLE_BLOCKS.map((block) => block.id))
+
+const isGraphicsPreset = (value: string | null): value is GraphicsPreset =>
+  value === 'low' || value === 'medium' || value === 'high'
+
+const getInitialGraphicsPreset = (): GraphicsPreset => {
+  try {
+    const storedPreset = localStorage.getItem(GRAPHICS_PRESET_STORAGE_KEY)
+    return isGraphicsPreset(storedPreset) ? storedPreset : 'medium'
+  } catch {
+    return 'medium'
+  }
+}
+
+const getInitialHotbarBlockIds = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HOTBAR_STORAGE_KEY) ?? '[]') as unknown
+    if (!Array.isArray(parsed)) {
+      return [...defaultHotbarBlockIds]
+    }
+
+    const storedIds = parsed
+      .map((entry) => Number(entry) as BlockId)
+      .filter((blockId) => placeableBlockIds.has(blockId))
+      .slice(0, HOTBAR_SIZE)
+
+    return [...storedIds, ...defaultHotbarBlockIds].slice(0, HOTBAR_SIZE)
+  } catch {
+    return [...defaultHotbarBlockIds]
+  }
+}
+
+const saveHotbarBlockIds = () => {
+  try {
+    localStorage.setItem(HOTBAR_STORAGE_KEY, JSON.stringify(hotbarBlockIds))
+  } catch {
+    // Ignore storage failures; the hotbar still works for this session.
+  }
+}
+
+const hotbarBlockIds: BlockId[] = getInitialHotbarBlockIds()
+let graphicsPreset: GraphicsPreset = getInitialGraphicsPreset()
 let graphicsSettings = GRAPHICS_PRESETS[graphicsPreset]
 
 function getRequiredElement<T extends Element>(selector: string) {
@@ -160,6 +203,7 @@ app.innerHTML = `
   </div>
 `
 
+const shell = getRequiredElement<HTMLDivElement>('.shell')
 const viewport = getRequiredElement<HTMLDivElement>('#viewport')
 const lockScreen = getRequiredElement<HTMLDivElement>('#lock-screen')
 const startButton = getRequiredElement<HTMLButtonElement>('#start-button')
@@ -206,6 +250,12 @@ function applyGraphicsPreset(preset: GraphicsPreset) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
   renderer.setSize(window.innerWidth, window.innerHeight)
   lighting.applyGraphicsSettings(graphicsSettings)
+
+  try {
+    localStorage.setItem(GRAPHICS_PRESET_STORAGE_KEY, graphicsPreset)
+  } catch {
+    // Ignore storage failures; the preset still applies for this session.
+  }
 }
 
 const selection = new Mesh(
@@ -223,6 +273,8 @@ scene.add(selection)
 const timer = new Timer()
 timer.connect(document)
 const raycaster = new Raycaster()
+raycaster.near = 0
+raycaster.far = 8
 const centerScreen = new Vector2(0, 0)
 const lookEuler = new Euler(0, 0, 0, 'YXZ')
 const moveDirection = new Vector3()
@@ -342,6 +394,7 @@ function updateHotbarSelection() {
 
 function assignBlockToSelectedSlot(block: BlockDefinition) {
   hotbarBlockIds[selectedHotbarSlot] = block.id
+  saveHotbarBlockIds()
   updateHotbarSelection()
 }
 
@@ -468,10 +521,15 @@ function updatePerf(deltaTime: number) {
 }
 
 function updateSelection() {
+  if (isPaletteOpen || document.pointerLockElement !== renderer.domElement) {
+    selection.visible = false
+    return null
+  }
+
   raycaster.setFromCamera(centerScreen, camera)
   const hit = world.raycast(raycaster)
 
-  if (!hit || hit.distance > 8) {
+  if (!hit) {
     selection.visible = false
     return null
   }
@@ -510,15 +568,19 @@ function placeOrRemoveBlock(place: boolean) {
     return
   }
 
-  const targetX = hit.block.x + hit.normal.x
-  const targetY = hit.block.y + hit.normal.y
-  const targetZ = hit.block.z + hit.normal.z
+  const target = isBlockReplaceable(hit.blockId)
+    ? hit.block
+    : {
+        x: hit.block.x + hit.normal.x,
+        y: hit.block.y + hit.normal.y,
+        z: hit.block.z + hit.normal.z,
+      }
 
-  if (!canPlaceBlock(targetX, targetY, targetZ)) {
+  if (!canPlaceBlock(target.x, target.y, target.z)) {
     return
   }
 
-  world.setBlock(targetX, targetY, targetZ, getSelectedBlock().id)
+  world.setBlock(target.x, target.y, target.z, getSelectedBlock().id)
 }
 
 function updateMovement(deltaTime: number) {
@@ -629,6 +691,7 @@ window.addEventListener('keydown', (event) => {
   ) {
     debugEnabled = !debugEnabled
     debugOverlay.setVisible(debugEnabled)
+    shell.classList.toggle('debug-mode', debugEnabled)
     event.preventDefault()
     return
   }

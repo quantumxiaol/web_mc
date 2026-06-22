@@ -76,6 +76,15 @@ button {
   align-items: flex-start;
 }
 
+.shell.debug-mode .hud-top > .panel:first-child,
+.shell.debug-mode .hud-bottom .controls {
+  opacity: 0.18;
+}
+
+.shell.debug-mode .metrics {
+  display: none;
+}
+
 .hud-bottom {
   bottom: 24px;
   align-items: flex-end;

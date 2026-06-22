@@ -35,6 +35,8 @@ const materialCacheKey = (definition: BlockDefinition, texturePath: string) =>
     definition.key,
     definition.materialKind,
     texturePath,
+    definition.transparent ? 'transparent' : '',
+    definition.liquid ? 'liquid' : '',
     definition.opacity ?? '',
     definition.emissiveColor ?? '',
     definition.emitsLight ?? '',
@@ -58,17 +60,20 @@ const createFaceMaterial = (definition: BlockDefinition, texturePath: string) =>
     material.alphaTest = 0.42
   }
 
-  if (definition.materialKind === 'transparent' || definition.materialKind === 'liquid') {
+  const shouldUseTransparency =
+    definition.transparent || definition.liquid || definition.opacity !== undefined
+
+  if (shouldUseTransparency) {
     material.transparent = true
     material.opacity = definition.opacity ?? 0.65
-    material.alphaTest = 0.04
+    material.alphaTest = definition.materialKind === 'liquid' ? 0.02 : 0.04
     material.depthWrite = false
   }
 
-  if (definition.materialKind === 'emissive') {
-    material.emissive = new Color(definition.emissiveColor ?? 0xffffff)
+  if (definition.emitsLight && definition.emissiveColor !== undefined) {
+    material.emissive = new Color(definition.emissiveColor)
     material.emissiveMap = texture
-    material.emissiveIntensity = definition.emitsLight ?? 0.45
+    material.emissiveIntensity = definition.emitsLight
   }
 
   materialCache.set(cacheKey, material)

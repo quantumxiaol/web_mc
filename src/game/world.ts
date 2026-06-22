@@ -46,6 +46,8 @@ interface Chunk {
   data: Uint8Array
   meshes: ChunkMesh[]
   instancesByBlock: Partial<Record<BlockId, BlockPosition[]>>
+  loadedBlockCount: number
+  renderedBlockCount: number
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
@@ -132,6 +134,8 @@ export class VoxelWorld {
   private readonly dirtyChunks = new Set<string>()
   private readonly raycastTargets: ChunkMesh[] = []
   private readonly scene: Scene
+  private loadedBlockCount = 0
+  private renderedBlockCount = 0
 
   constructor(scene: Scene) {
     this.scene = scene
@@ -164,25 +168,11 @@ export class VoxelWorld {
   }
 
   getLoadedBlockCount() {
-    let total = 0
-    for (const chunk of this.chunks.values()) {
-      for (const blockId of chunk.data) {
-        if (blockId !== BlockId.Air) {
-          total += 1
-        }
-      }
-    }
-    return total
+    return this.loadedBlockCount
   }
 
   getRenderedBlockCount() {
-    let total = 0
-    for (const chunk of this.chunks.values()) {
-      for (const instances of Object.values(chunk.instancesByBlock)) {
-        total += instances?.length ?? 0
-      }
-    }
-    return total
+    return this.renderedBlockCount
   }
 
   getMeshStats(): WorldMeshStats {
@@ -240,12 +230,21 @@ export class VoxelWorld {
     const lx = mod(worldX, CHUNK_SIZE)
     const lz = mod(worldZ, CHUNK_SIZE)
     const index = blockIndex(lx, worldY, lz)
+    const previousBlockId = chunk.data[index] as BlockId
 
-    if (chunk.data[index] === blockId) {
+    if (previousBlockId === blockId) {
       return false
     }
 
     chunk.data[index] = blockId
+    if (previousBlockId === BlockId.Air && blockId !== BlockId.Air) {
+      chunk.loadedBlockCount += 1
+      this.loadedBlockCount += 1
+    } else if (previousBlockId !== BlockId.Air && blockId === BlockId.Air) {
+      chunk.loadedBlockCount -= 1
+      this.loadedBlockCount -= 1
+    }
+
     this.markChunkDirty(cx, cz)
 
     if (lx === 0) {
@@ -349,6 +348,21 @@ export class VoxelWorld {
     this.dirtyChunks.add(chunkKey(cx, cz))
   }
 
+  private markLoadedNeighborsDirty(cx: number, cz: number) {
+    const neighbors = [
+      [cx - 1, cz],
+      [cx + 1, cz],
+      [cx, cz - 1],
+      [cx, cz + 1],
+    ] as const
+
+    for (const [nx, nz] of neighbors) {
+      if (this.chunks.has(chunkKey(nx, nz))) {
+        this.markChunkDirty(nx, nz)
+      }
+    }
+  }
+
   private isBlockVisible(worldX: number, worldY: number, worldZ: number) {
     const neighbors = [
       [1, 0, 0],
@@ -375,16 +389,21 @@ export class VoxelWorld {
       return cached
     }
 
+    const generated = this.generateChunk(cx, cz)
     const chunk: Chunk = {
       cx,
       cz,
-      data: this.generateChunk(cx, cz),
+      data: generated.data,
       meshes: [],
       instancesByBlock: {},
+      loadedBlockCount: generated.loadedBlockCount,
+      renderedBlockCount: 0,
     }
 
     this.chunks.set(key, chunk)
+    this.loadedBlockCount += chunk.loadedBlockCount
     this.rebuildChunkMesh(chunk)
+    this.markLoadedNeighborsDirty(cx, cz)
     return chunk
   }
 
@@ -392,6 +411,8 @@ export class VoxelWorld {
     this.removeChunkMeshes(chunk)
     this.dirtyChunks.delete(key)
     this.chunks.delete(key)
+    this.loadedBlockCount -= chunk.loadedBlockCount
+    this.renderedBlockCount -= chunk.renderedBlockCount
   }
 
   private removeChunkMeshes(chunk: Chunk) {
@@ -401,12 +422,14 @@ export class VoxelWorld {
       if (index >= 0) {
         this.raycastTargets.splice(index, 1)
       }
+      mesh.dispose()
     }
     chunk.meshes = []
   }
 
   private generateChunk(cx: number, cz: number) {
     const data = new Uint8Array(CHUNK_SIZE * WORLD_HEIGHT * CHUNK_SIZE)
+    let loadedBlockCount = 0
 
     for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
       for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
@@ -429,16 +452,19 @@ export class VoxelWorld {
             blockId = soilBlock
           }
           data[blockIndex(lx, y, lz)] = blockId
+          loadedBlockCount += 1
         }
       }
     }
 
-    return data
+    return { data, loadedBlockCount }
   }
 
   private rebuildChunkMesh(chunk: Chunk) {
+    this.renderedBlockCount -= chunk.renderedBlockCount
     this.removeChunkMeshes(chunk)
     chunk.instancesByBlock = {}
+    chunk.renderedBlockCount = 0
 
     for (let y = 0; y < WORLD_HEIGHT; y += 1) {
       for (let z = 0; z < CHUNK_SIZE; z += 1) {
@@ -460,9 +486,12 @@ export class VoxelWorld {
             y,
             z: worldZ,
           })
+          chunk.renderedBlockCount += 1
         }
       }
     }
+
+    this.renderedBlockCount += chunk.renderedBlockCount
 
     for (const definition of PLACEABLE_BLOCKS) {
       const instances = chunk.instancesByBlock[definition.id]
