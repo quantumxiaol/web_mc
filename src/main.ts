@@ -283,6 +283,7 @@ const right = new Vector3()
 const up = new Vector3(0, 1, 0)
 
 const keys = new Set<string>()
+const wheelCooldownMs = 120
 
 let yaw = 0
 let pitch = 0
@@ -297,6 +298,7 @@ let fps = 0
 let frameMs = 0
 let fpsFrames = 0
 let fpsTime = 0
+let lastWheelSlotChange = 0
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -310,6 +312,26 @@ const debugOverlay = new DebugOverlay()
 
 const getSelectedBlock = () => getRequiredBlockDefinition(hotbarBlockIds[selectedHotbarSlot])
 
+const isGameLocked = () => document.pointerLockElement === renderer.domElement
+
+const clearActiveInput = () => {
+  keys.clear()
+  verticalVelocity = 0
+}
+
+const isEditableTarget = (target: EventTarget | null) =>
+  target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+
+const isSystemShortcutEvent = (event: KeyboardEvent) =>
+  event.metaKey ||
+  event.ctrlKey ||
+  event.code === 'MetaLeft' ||
+  event.code === 'MetaRight' ||
+  event.code === 'ControlLeft' ||
+  event.code === 'ControlRight' ||
+  event.key === 'Meta' ||
+  event.key === 'Control'
+
 const requestLock = () => {
   if (isPaletteOpen) {
     return
@@ -321,7 +343,7 @@ const requestLock = () => {
 }
 
 function syncLockScreen() {
-  lockScreen.classList.toggle('hidden', document.pointerLockElement === renderer.domElement || isPaletteOpen)
+  lockScreen.classList.toggle('hidden', isGameLocked() || isPaletteOpen)
 }
 
 function setPaletteOpen(open: boolean) {
@@ -331,7 +353,8 @@ function setPaletteOpen(open: boolean) {
   syncLockScreen()
 
   if (open) {
-    if (document.pointerLockElement === renderer.domElement) {
+    clearActiveInput()
+    if (isGameLocked()) {
       document.exitPointerLock()
     }
     paletteSearch.focus()
@@ -402,6 +425,42 @@ function setSelectedBlockByIndex(index: number) {
   const normalizedIndex = ((index % hotbarBlockIds.length) + hotbarBlockIds.length) % hotbarBlockIds.length
   selectedHotbarSlot = normalizedIndex
   updateHotbarSelection()
+}
+
+function handleGameWheel(event: WheelEvent) {
+  if (isPaletteOpen) {
+    return
+  }
+
+  const isCanvasWheel = event.target === renderer.domElement
+  if (!isGameLocked() && !isCanvasWheel) {
+    return
+  }
+
+  event.preventDefault()
+
+  if (!isGameLocked()) {
+    return
+  }
+
+  const dominantDelta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+  const delta = Math.sign(dominantDelta)
+  const now = performance.now()
+
+  if (delta !== 0 && now - lastWheelSlotChange > wheelCooldownMs) {
+    setSelectedBlockByIndex(selectedHotbarSlot + delta)
+    lastWheelSlotChange = now
+  }
+}
+
+function preventGameSurfaceGesture(event: Event) {
+  if (isPaletteOpen) {
+    return
+  }
+
+  if (isGameLocked() || event.target === renderer.domElement) {
+    event.preventDefault()
+  }
 }
 
 function moveWithCollisions(delta: Vector3) {
@@ -521,7 +580,7 @@ function updatePerf(deltaTime: number) {
 }
 
 function updateSelection() {
-  if (isPaletteOpen || document.pointerLockElement !== renderer.domElement) {
+  if (isPaletteOpen || !isGameLocked()) {
     selection.visible = false
     return null
   }
@@ -554,7 +613,7 @@ function formatTarget(hit: WorldRaycastHit | null) {
 }
 
 function placeOrRemoveBlock(place: boolean) {
-  if (isPaletteOpen || document.pointerLockElement !== renderer.domElement) {
+  if (isPaletteOpen || !isGameLocked()) {
     return
   }
 
@@ -631,7 +690,7 @@ function animate(timestamp?: number) {
   const deltaTime = Math.min(timer.getDelta(), 0.05)
   updatePerf(deltaTime)
 
-  if (document.pointerLockElement === renderer.domElement) {
+  if (isGameLocked()) {
     updateMovement(deltaTime)
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
@@ -664,7 +723,7 @@ function animate(timestamp?: number) {
 }
 
 document.addEventListener('mousemove', (event) => {
-  if (document.pointerLockElement !== renderer.domElement) {
+  if (!isGameLocked()) {
     return
   }
 
@@ -675,17 +734,24 @@ document.addEventListener('mousemove', (event) => {
 })
 
 document.addEventListener('pointerlockchange', () => {
+  if (!isGameLocked()) {
+    clearActiveInput()
+  }
   syncLockScreen()
 })
 
+document.addEventListener('pointerlockerror', clearActiveInput)
+
 window.addEventListener('keydown', (event) => {
-  const isEditableTarget =
-    event.target instanceof HTMLInputElement ||
-    event.target instanceof HTMLTextAreaElement ||
-    event.target instanceof HTMLSelectElement
+  const editableTarget = isEditableTarget(event.target)
+
+  if (!editableTarget && isSystemShortcutEvent(event)) {
+    clearActiveInput()
+    return
+  }
 
   if (
-    !isEditableTarget &&
+    !editableTarget &&
     (event.code === 'F3' || event.key === 'F3' || event.code === 'Backquote') &&
     !event.repeat
   ) {
@@ -697,7 +763,7 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (
-    !isEditableTarget &&
+    !editableTarget &&
     (event.code === 'F4' ||
       event.key === 'F4' ||
       event.code === 'KeyP' ||
@@ -709,7 +775,7 @@ window.addEventListener('keydown', (event) => {
     return
   }
 
-  if (!isEditableTarget && event.code === 'KeyE' && !event.repeat) {
+  if (!editableTarget && event.code === 'KeyE' && !event.repeat) {
     setPaletteOpen(!isPaletteOpen)
     event.preventDefault()
     return
@@ -749,6 +815,26 @@ window.addEventListener('keydown', (event) => {
 
 window.addEventListener('keyup', (event) => {
   keys.delete(event.code)
+  if (
+    event.code === 'MetaLeft' ||
+    event.code === 'MetaRight' ||
+    event.code === 'ControlLeft' ||
+    event.code === 'ControlRight' ||
+    event.key === 'Meta' ||
+    event.key === 'Control'
+  ) {
+    clearActiveInput()
+  }
+})
+
+window.addEventListener('blur', clearActiveInput)
+window.addEventListener('focus', clearActiveInput)
+window.addEventListener('pagehide', clearActiveInput)
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') {
+    clearActiveInput()
+  }
 })
 
 hotbar.addEventListener('click', (event) => {
@@ -823,7 +909,9 @@ paletteClose.addEventListener('click', () => {
 })
 
 renderer.domElement.addEventListener('mousedown', (event) => {
-  if (document.pointerLockElement !== renderer.domElement) {
+  event.preventDefault()
+
+  if (!isGameLocked()) {
     requestLock()
     return
   }
@@ -834,11 +922,28 @@ renderer.domElement.addEventListener('mousedown', (event) => {
   if (event.button === 2) {
     placeOrRemoveBlock(true)
   }
-})
+}, { passive: false })
+
+renderer.domElement.addEventListener('mouseup', (event) => {
+  event.preventDefault()
+}, { passive: false })
+
+renderer.domElement.addEventListener('auxclick', (event) => {
+  event.preventDefault()
+}, { passive: false })
 
 renderer.domElement.addEventListener('contextmenu', (event) => {
   event.preventDefault()
+}, { passive: false })
+
+renderer.domElement.addEventListener('dragstart', (event) => {
+  event.preventDefault()
 })
+
+window.addEventListener('wheel', handleGameWheel, { passive: false })
+window.addEventListener('touchmove', preventGameSurfaceGesture, { passive: false })
+window.addEventListener('gesturestart', preventGameSurfaceGesture)
+window.addEventListener('gesturechange', preventGameSurfaceGesture)
 
 startButton.addEventListener('click', requestLock)
 

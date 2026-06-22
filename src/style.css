@@ -20,10 +20,12 @@ body,
   width: 100%;
   min-height: 100%;
   margin: 0;
+  overscroll-behavior: none;
 }
 
 body {
   overflow: hidden;
+  user-select: none;
 }
 
 button,
@@ -59,6 +61,9 @@ button {
 
 .viewport canvas {
   display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .hud {
