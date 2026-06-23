@@ -58,12 +58,16 @@ const createFaceMaterial = (definition: BlockDefinition, texturePath: string) =>
 
   if (definition.materialKind === 'alphaTest') {
     material.alphaTest = 0.42
+    material.transparent = false
+    material.depthWrite = true
   }
 
   const shouldUseTransparency =
-    definition.transparent || definition.liquid || definition.opacity !== undefined
+    definition.materialKind === 'transparent' ||
+    definition.materialKind === 'liquid' ||
+    definition.opacity !== undefined
 
-  if (shouldUseTransparency) {
+  if (shouldUseTransparency && definition.materialKind !== 'alphaTest') {
     material.transparent = true
     material.opacity = definition.opacity ?? 0.65
     material.alphaTest = definition.materialKind === 'liquid' ? 0.02 : 0.04

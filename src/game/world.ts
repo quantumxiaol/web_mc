@@ -16,10 +16,10 @@ import {
   type BlockRenderLayer,
 } from './blocks'
 import { createBlockMaterials, type BlockMaterial } from './materials'
+import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT } from './worldConstants'
+import { generateChunk } from './worldGenerator'
 
-export const CHUNK_SIZE = 16
-export const WORLD_HEIGHT = 16
-export const LOAD_RADIUS = 2
+export { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT } from './worldConstants'
 
 export interface BlockPosition {
   x: number
@@ -72,61 +72,6 @@ const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   emissive: 1,
   transparent: 2,
   liquid: 3,
-}
-
-const surfaceBlockFor = (worldX: number, worldZ: number, height: number): BlockId => {
-  const warmth = Math.sin(worldX * 0.045) + Math.cos(worldZ * 0.04)
-  const moisture = Math.sin((worldX - worldZ) * 0.034)
-
-  if (height >= 6 || warmth < -1.1) {
-    return BlockId.Snow
-  }
-
-  if (warmth > 1.15) {
-    return moisture > 0.4 ? BlockId.RedSand : BlockId.Sand
-  }
-
-  if (moisture < -0.72) {
-    return BlockId.GreySand
-  }
-
-  return BlockId.Grass
-}
-
-const soilBlockFor = (surfaceBlock: BlockId): BlockId => {
-  if (surfaceBlock === BlockId.Sand || surfaceBlock === BlockId.RedSand || surfaceBlock === BlockId.GreySand) {
-    return surfaceBlock
-  }
-
-  if (surfaceBlock === BlockId.Snow) {
-    return BlockId.GravelDirt
-  }
-
-  return BlockId.Dirt
-}
-
-const stoneBlockFor = (worldX: number, worldY: number, worldZ: number): BlockId => {
-  const oreNoise = Math.abs(
-    Math.sin(worldX * 12.9898 + worldY * 78.233 + worldZ * 37.719) * 43758.5453,
-  ) % 1
-
-  if (worldY <= 2 && oreNoise > 0.992) {
-    return BlockId.StoneDiamond
-  }
-  if (worldY <= 3 && oreNoise > 0.986) {
-    return BlockId.GreystoneRuby
-  }
-  if (worldY <= 4 && oreNoise > 0.976) {
-    return BlockId.StoneGold
-  }
-  if (worldY <= 5 && oreNoise > 0.958) {
-    return BlockId.StoneIron
-  }
-  if (oreNoise > 0.935) {
-    return BlockId.StoneCoal
-  }
-
-  return BlockId.Stone
 }
 
 export class VoxelWorld {
@@ -389,7 +334,7 @@ export class VoxelWorld {
       return cached
     }
 
-    const generated = this.generateChunk(cx, cz)
+    const generated = generateChunk(cx, cz)
     const chunk: Chunk = {
       cx,
       cz,
@@ -408,11 +353,14 @@ export class VoxelWorld {
   }
 
   private unloadChunk(key: string, chunk: Chunk) {
+    const { cx, cz } = chunk
+
     this.removeChunkMeshes(chunk)
     this.dirtyChunks.delete(key)
     this.chunks.delete(key)
     this.loadedBlockCount -= chunk.loadedBlockCount
     this.renderedBlockCount -= chunk.renderedBlockCount
+    this.markLoadedNeighborsDirty(cx, cz)
   }
 
   private removeChunkMeshes(chunk: Chunk) {
@@ -425,39 +373,6 @@ export class VoxelWorld {
       mesh.dispose()
     }
     chunk.meshes = []
-  }
-
-  private generateChunk(cx: number, cz: number) {
-    const data = new Uint8Array(CHUNK_SIZE * WORLD_HEIGHT * CHUNK_SIZE)
-    let loadedBlockCount = 0
-
-    for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
-      for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
-        const worldX = cx * CHUNK_SIZE + lx
-        const worldZ = cz * CHUNK_SIZE + lz
-
-        const ridge =
-          Math.sin(worldX * 0.17) * 1.4 +
-          Math.cos(worldZ * 0.12) * 1.3 +
-          Math.sin((worldX + worldZ) * 0.08) * 0.9
-        const height = Math.max(1, Math.min(7, Math.round(3 + ridge)))
-        const topBlock = surfaceBlockFor(worldX, worldZ, height)
-        const soilBlock = soilBlockFor(topBlock)
-
-        for (let y = 0; y <= height; y += 1) {
-          let blockId = stoneBlockFor(worldX, y, worldZ)
-          if (y === height) {
-            blockId = topBlock
-          } else if (y >= height - 2) {
-            blockId = soilBlock
-          }
-          data[blockIndex(lx, y, lz)] = blockId
-          loadedBlockCount += 1
-        }
-      }
-    }
-
-    return { data, loadedBlockCount }
   }
 
   private rebuildChunkMesh(chunk: Chunk) {

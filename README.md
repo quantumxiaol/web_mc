@@ -23,6 +23,7 @@
 - `F4` / `P` 可在 low / medium / high 图形档位之间切换，F3 会显示当前档位、DPR 和 mesh layer 统计
 - 图形档位和快捷栏配置会写入浏览器 `localStorage`
 - 区块修改使用 dirty chunk 队列，渲染时会跳过完全被不透明方块包围的隐藏方块
+- 世界高度 32，`worldGenerator.ts` 会生成地形层次、矿石、树、仙人掌、蘑菇、小水池和岩浆池
 - 使用 `Uint8Array` 存储区块数据
 - 按玩家位置动态加载 `5 x 5` 个区块
 - 使用 `THREE.InstancedMesh` 渲染区块内的多种方块

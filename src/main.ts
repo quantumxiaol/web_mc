@@ -233,7 +233,7 @@ scene.background = new Color(0xb8dcff)
 scene.fog = new Fog(0xb8dcff, 40, 120)
 
 const camera = new PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 400)
-camera.position.set(8, 9, 8)
+camera.position.set(8, 18, 8)
 
 const cameraRig = new Group()
 cameraRig.add(camera)
@@ -362,7 +362,7 @@ function setPaletteOpen(open: boolean) {
 }
 
 const resetPlayer = () => {
-  camera.position.set(8, 9, 8)
+  camera.position.set(8, 18, 8)
   yaw = 0
   pitch = -0.15
   verticalVelocity = 0
