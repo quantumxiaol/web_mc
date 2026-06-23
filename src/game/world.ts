@@ -4,6 +4,7 @@ import {
   Float32BufferAttribute,
   InstancedMesh,
   Matrix4,
+  Mesh,
   Scene,
   Vector3,
 } from 'three'
@@ -18,6 +19,7 @@ import {
   type BlockDefinition,
   type BlockRenderLayer,
 } from './blocks'
+import { buildLiquidMesh, hasVisibleLiquidFaces } from './liquidMesh'
 import { createBlockMaterials, type BlockMaterial } from './materials'
 import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT } from './worldConstants'
 import { generateChunk } from './worldGenerator'
@@ -32,7 +34,7 @@ export interface BlockPosition {
 
 export type PlaceableBlockDefinition = BlockDefinition
 
-type ChunkMesh = InstancedMesh<BufferGeometry, BlockMaterial>
+type ChunkMesh = Mesh<BufferGeometry, BlockMaterial> | InstancedMesh<BufferGeometry, BlockMaterial>
 
 export interface VoxelRaycastHit {
   block: BlockPosition
@@ -62,8 +64,6 @@ interface Chunk {
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
-const liquidGeometry = new BoxGeometry(1, 0.82, 1)
-liquidGeometry.translate(0, -0.09, 0)
 const createCrossGeometry = (width = 0.78, height = 0.82) => {
   const geometry = new BufferGeometry()
   const halfWidth = width / 2
@@ -451,7 +451,12 @@ export class VoxelWorld {
   private removeChunkMeshes(chunk: Chunk) {
     for (const mesh of chunk.meshes) {
       this.scene.remove(mesh)
-      mesh.dispose()
+      if (mesh.userData.disposeGeometry === true) {
+        mesh.geometry.dispose()
+      }
+      if (mesh instanceof InstancedMesh) {
+        mesh.dispose()
+      }
     }
     chunk.meshes = []
   }
@@ -472,7 +477,16 @@ export class VoxelWorld {
 
           const worldX = chunk.cx * CHUNK_SIZE + x
           const worldZ = chunk.cz * CHUNK_SIZE + z
-          if (!this.isBlockVisible(worldX, y, worldZ)) {
+          const shape = getBlockShape(blockId)
+          if (
+            shape === 'liquid' &&
+            !hasVisibleLiquidFaces(blockId, worldX, y, worldZ, (blockX, blockY, blockZ) =>
+              this.getBlock(blockX, blockY, blockZ),
+            )
+          ) {
+            continue
+          }
+          if (shape !== 'liquid' && !this.isBlockVisible(worldX, y, worldZ)) {
             continue
           }
 
@@ -498,8 +512,30 @@ export class VoxelWorld {
 
       const renderLayer = getBlockRenderLayer(definition.id)
       const shape = getBlockShape(definition.id)
-      const geometry =
-        shape === 'liquid' ? liquidGeometry : shape === 'cross' ? crossGeometry : blockGeometry
+      if (shape === 'liquid') {
+        const mesh = buildLiquidMesh({
+          blockId: definition.id,
+          cells: instances,
+          material: materials,
+          getBlock: (blockX, blockY, blockZ) => this.getBlock(blockX, blockY, blockZ),
+        })
+
+        if (!mesh) {
+          continue
+        }
+
+        mesh.castShadow = false
+        mesh.receiveShadow = false
+        mesh.renderOrder = renderOrderByLayer[renderLayer]
+        mesh.userData.chunkKey = chunkKey(chunk.cx, chunk.cz)
+        mesh.userData.blockId = definition.id
+        mesh.userData.renderLayer = renderLayer
+        this.scene.add(mesh)
+        chunk.meshes.push(mesh)
+        continue
+      }
+
+      const geometry = shape === 'cross' ? crossGeometry : blockGeometry
       const mesh = new InstancedMesh(geometry, materials, instances.length)
       mesh.castShadow =
         definition.solid && renderLayer !== 'transparent' && renderLayer !== 'liquid'

@@ -27,6 +27,7 @@ interface Climate {
 
 const DECORATION_MARGIN = 8
 const POOL_MARGIN = 4
+const OPPOSITE_POOL_RADIUS = 8
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
@@ -213,7 +214,7 @@ const fillTerrain = (writer: ChunkWriter) => {
   }
 }
 
-const poolCandidateAt = (worldX: number, worldZ: number): PoolCandidate | null => {
+const rawPoolCandidateAt = (worldX: number, worldZ: number): PoolCandidate | null => {
   const height = terrainHeightAt(worldX, worldZ)
   const surfaceBlock = surfaceBlockFor(worldX, worldZ, height)
   const { warmth, moisture } = climateAt(worldX, worldZ)
@@ -239,6 +240,36 @@ const poolCandidateAt = (worldX: number, worldZ: number): PoolCandidate | null =
   }
 
   return null
+}
+
+const hasNearbyOppositePool = (worldX: number, worldZ: number, blockId: BlockId, radius = OPPOSITE_POOL_RADIUS) => {
+  for (let centerZ = worldZ - radius; centerZ <= worldZ + radius; centerZ += 1) {
+    for (let centerX = worldX - radius; centerX <= worldX + radius; centerX += 1) {
+      if (Math.hypot(centerX - worldX, centerZ - worldZ) > radius) {
+        continue
+      }
+
+      const candidate = rawPoolCandidateAt(centerX, centerZ)
+      const isOpposite =
+        (blockId === BlockId.Water && candidate?.blockId === BlockId.Lava) ||
+        (blockId === BlockId.Lava && candidate?.blockId === BlockId.Water)
+
+      if (isOpposite) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+const poolCandidateAt = (worldX: number, worldZ: number): PoolCandidate | null => {
+  const candidate = rawPoolCandidateAt(worldX, worldZ)
+  if (!candidate) {
+    return null
+  }
+
+  return hasNearbyOppositePool(worldX, worldZ, candidate.blockId) ? null : candidate
 }
 
 const isCoveredByPool = (worldX: number, worldZ: number) => {
