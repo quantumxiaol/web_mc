@@ -1,5 +1,6 @@
 import {
   Color,
+  DoubleSide,
   MeshStandardMaterial,
   NearestFilter,
   NearestMipmapNearestFilter,
@@ -84,6 +85,7 @@ const createFaceMaterial = (definition: BlockDefinition, texturePath: string) =>
     material.alphaTest = 0.42
     material.transparent = false
     material.depthWrite = true
+    material.side = DoubleSide
   }
 
   const shouldUseTransparency =

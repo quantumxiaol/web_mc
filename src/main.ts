@@ -8,10 +8,8 @@ import {
   Mesh,
   MeshBasicMaterial,
   PerspectiveCamera,
-  Raycaster,
   Scene,
   Timer,
-  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three'
@@ -276,12 +274,9 @@ scene.add(selection)
 
 const timer = new Timer()
 timer.connect(document)
-const raycaster = new Raycaster()
-raycaster.near = 0
-raycaster.far = 8
-const centerScreen = new Vector2(0, 0)
 const lookEuler = new Euler(0, 0, 0, 'YXZ')
 const moveDirection = new Vector3()
+const lookDirection = new Vector3()
 const forward = new Vector3()
 const right = new Vector3()
 const up = new Vector3(0, 1, 0)
@@ -651,8 +646,8 @@ function updateSelection() {
     return null
   }
 
-  raycaster.setFromCamera(centerScreen, camera)
-  const hit = world.raycast(raycaster)
+  camera.getWorldDirection(lookDirection)
+  const hit = world.raycastVoxel(camera.position, lookDirection, 8)
 
   if (!hit) {
     selection.visible = false

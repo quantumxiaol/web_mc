@@ -1,13 +1,16 @@
 import {
   BoxGeometry,
+  BufferGeometry,
+  Float32BufferAttribute,
   InstancedMesh,
   Matrix4,
-  Raycaster,
   Scene,
+  Vector3,
 } from 'three'
 import {
   BlockId,
   PLACEABLE_BLOCKS,
+  getBlockShape,
   getBlockRenderLayer,
   isBlockOpaqueOccluder,
   isBlockRaycastTarget,
@@ -29,7 +32,15 @@ export interface BlockPosition {
 
 export type PlaceableBlockDefinition = BlockDefinition
 
-type ChunkMesh = InstancedMesh<BoxGeometry, BlockMaterial>
+type ChunkMesh = InstancedMesh<BufferGeometry, BlockMaterial>
+
+export interface VoxelRaycastHit {
+  block: BlockPosition
+  blockId: BlockId
+  normal: Vector3
+  distance: number
+  point: Vector3
+}
 
 export interface WorldMeshStats {
   total: number
@@ -53,6 +64,40 @@ interface Chunk {
 const blockGeometry = new BoxGeometry(1, 1, 1)
 const liquidGeometry = new BoxGeometry(1, 0.82, 1)
 liquidGeometry.translate(0, -0.09, 0)
+const createCrossGeometry = (width = 0.78, height = 0.82) => {
+  const geometry = new BufferGeometry()
+  const halfWidth = width / 2
+  const bottom = -0.5
+  const top = bottom + height
+
+  const positions = [
+    -halfWidth, bottom, -halfWidth,
+    halfWidth, bottom, halfWidth,
+    halfWidth, top, halfWidth,
+    -halfWidth, top, -halfWidth,
+    -halfWidth, bottom, halfWidth,
+    halfWidth, bottom, -halfWidth,
+    halfWidth, top, -halfWidth,
+    -halfWidth, top, halfWidth,
+  ]
+  const uvs = [
+    0, 0,
+    1, 0,
+    1, 1,
+    0, 1,
+    0, 0,
+    1, 0,
+    1, 1,
+    0, 1,
+  ]
+
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2))
+  geometry.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
+  geometry.computeVertexNormals()
+  return geometry
+}
+const crossGeometry = createCrossGeometry()
 const blockMaterialMap = new Map<BlockId, BlockMaterial>(
   PLACEABLE_BLOCKS.map((definition) => [definition.id, createBlockMaterials(definition)] as const),
 )
@@ -79,7 +124,6 @@ const renderOrderByLayer: Record<BlockRenderLayer, number> = {
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
   private readonly dirtyChunks = new Set<string>()
-  private readonly raycastTargets: ChunkMesh[] = []
   private readonly scene: Scene
   private loadedBlockCount = 0
   private renderedBlockCount = 0
@@ -258,37 +302,76 @@ export class VoxelWorld {
     return false
   }
 
-  raycast(raycaster: Raycaster) {
-    const intersections = raycaster.intersectObjects(this.raycastTargets, false)
-    const hit = intersections[0]
-    if (!hit || hit.instanceId === undefined) {
+  raycastVoxel(origin: Vector3, direction: Vector3, maxDistance = 8): VoxelRaycastHit | null {
+    const rayDirection = direction.clone().normalize()
+    if (rayDirection.lengthSq() === 0) {
       return null
     }
 
-    const mesh = hit.object as ChunkMesh
-    const key = mesh.userData.chunkKey as string | undefined
-    const blockId = mesh.userData.blockId as BlockId | undefined
-    if (!key || blockId === undefined) {
-      return null
+    let blockX = Math.floor(origin.x)
+    let blockY = Math.floor(origin.y)
+    let blockZ = Math.floor(origin.z)
+
+    const stepX = Math.sign(rayDirection.x)
+    const stepY = Math.sign(rayDirection.y)
+    const stepZ = Math.sign(rayDirection.z)
+
+    const tDeltaX = stepX === 0 ? Number.POSITIVE_INFINITY : Math.abs(1 / rayDirection.x)
+    const tDeltaY = stepY === 0 ? Number.POSITIVE_INFINITY : Math.abs(1 / rayDirection.y)
+    const tDeltaZ = stepZ === 0 ? Number.POSITIVE_INFINITY : Math.abs(1 / rayDirection.z)
+
+    let tMaxX = stepX > 0 ? (blockX + 1 - origin.x) / rayDirection.x : (origin.x - blockX) / -rayDirection.x
+    let tMaxY = stepY > 0 ? (blockY + 1 - origin.y) / rayDirection.y : (origin.y - blockY) / -rayDirection.y
+    let tMaxZ = stepZ > 0 ? (blockZ + 1 - origin.z) / rayDirection.z : (origin.z - blockZ) / -rayDirection.z
+
+    if (stepX === 0) {
+      tMaxX = Number.POSITIVE_INFINITY
+    }
+    if (stepY === 0) {
+      tMaxY = Number.POSITIVE_INFINITY
+    }
+    if (stepZ === 0) {
+      tMaxZ = Number.POSITIVE_INFINITY
     }
 
-    const chunk = this.chunks.get(key)
-    if (!chunk) {
-      return null
+    const normal = new Vector3()
+    let distance = 0
+
+    while (distance <= maxDistance) {
+      const blockId = this.getBlock(blockX, blockY, blockZ)
+      if (isBlockRaycastTarget(blockId)) {
+        return {
+          distance,
+          point: origin.clone().addScaledVector(rayDirection, distance),
+          normal: normal.clone(),
+          block: {
+            x: blockX,
+            y: blockY,
+            z: blockZ,
+          },
+          blockId,
+        }
+      }
+
+      if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+        blockX += stepX
+        distance = tMaxX
+        tMaxX += tDeltaX
+        normal.set(-stepX, 0, 0)
+      } else if (tMaxY < tMaxZ) {
+        blockY += stepY
+        distance = tMaxY
+        tMaxY += tDeltaY
+        normal.set(0, -stepY, 0)
+      } else {
+        blockZ += stepZ
+        distance = tMaxZ
+        tMaxZ += tDeltaZ
+        normal.set(0, 0, -stepZ)
+      }
     }
 
-    const block = chunk.instancesByBlock[blockId]?.[hit.instanceId]
-    if (!block || !hit.face) {
-      return null
-    }
-
-    return {
-      distance: hit.distance,
-      point: hit.point.clone(),
-      normal: hit.face.normal.clone().round(),
-      block,
-      blockId,
-    }
+    return null
   }
 
   private markChunkDirty(cx: number, cz: number) {
@@ -368,10 +451,6 @@ export class VoxelWorld {
   private removeChunkMeshes(chunk: Chunk) {
     for (const mesh of chunk.meshes) {
       this.scene.remove(mesh)
-      const index = this.raycastTargets.indexOf(mesh)
-      if (index >= 0) {
-        this.raycastTargets.splice(index, 1)
-      }
       mesh.dispose()
     }
     chunk.meshes = []
@@ -418,7 +497,9 @@ export class VoxelWorld {
       }
 
       const renderLayer = getBlockRenderLayer(definition.id)
-      const geometry = renderLayer === 'liquid' ? liquidGeometry : blockGeometry
+      const shape = getBlockShape(definition.id)
+      const geometry =
+        shape === 'liquid' ? liquidGeometry : shape === 'cross' ? crossGeometry : blockGeometry
       const mesh = new InstancedMesh(geometry, materials, instances.length)
       mesh.castShadow =
         definition.solid && renderLayer !== 'transparent' && renderLayer !== 'liquid'
@@ -436,9 +517,6 @@ export class VoxelWorld {
 
       mesh.instanceMatrix.needsUpdate = true
       this.scene.add(mesh)
-      if (isBlockRaycastTarget(definition.id)) {
-        this.raycastTargets.push(mesh)
-      }
       chunk.meshes.push(mesh)
     }
   }

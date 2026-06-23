@@ -42,6 +42,8 @@ export type BlockMaterialKind = 'opaque' | 'alphaTest' | 'transparent' | 'emissi
 
 export type BlockRenderLayer = 'opaque' | 'cutout' | 'transparent' | 'liquid' | 'emissive'
 
+export type BlockShape = 'cube' | 'cross' | 'liquid'
+
 export const BLOCK_CATEGORIES = [
   { id: 'terrain', label: '地形' },
   { id: 'building', label: '建筑' },
@@ -68,6 +70,7 @@ export interface BlockDefinition {
   opacity?: number
   materialKind: BlockMaterialKind
   renderLayer?: BlockRenderLayer
+  shape?: BlockShape
   textures: {
     side: string
     top?: string
@@ -350,8 +353,12 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     label: '红蘑菇',
     iconPath: tile('mushroom_red'),
     category: 'nature',
-    solid: true,
-    materialKind: 'opaque',
+    solid: false,
+    transparent: true,
+    replaceable: true,
+    materialKind: 'alphaTest',
+    renderLayer: 'cutout',
+    shape: 'cross',
     textures: { side: tile('mushroom_red') },
   },
   {
@@ -360,8 +367,12 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     label: '褐蘑菇',
     iconPath: tile('mushroom_brown'),
     category: 'nature',
-    solid: true,
-    materialKind: 'opaque',
+    solid: false,
+    transparent: true,
+    replaceable: true,
+    materialKind: 'alphaTest',
+    renderLayer: 'cutout',
+    shape: 'cross',
     textures: { side: tile('mushroom_brown') },
   },
   {
@@ -472,6 +483,20 @@ const blockById = new Map<BlockId, BlockDefinition>(
 )
 
 export const getBlockDefinition = (blockId: BlockId) => blockById.get(blockId)
+
+export const getBlockShape = (blockId: BlockId): BlockShape => {
+  const block = getBlockDefinition(blockId)
+
+  if (!block) {
+    return 'cube'
+  }
+
+  if (block.shape) {
+    return block.shape
+  }
+
+  return block.liquid ? 'liquid' : 'cube'
+}
 
 export const getBlockLabel = (blockId: BlockId) => {
   if (blockId === BlockId.Air) {

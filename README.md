@@ -25,7 +25,9 @@
 - 图形档位和快捷栏配置会写入浏览器 `localStorage`
 - 区块修改使用 dirty chunk 队列，渲染时会跳过完全被不透明方块包围的隐藏方块
 - 世界高度 32，`worldGenerator.ts` 会生成地形层次、矿石、树、仙人掌、蘑菇、小水池和岩浆池
+- 蘑菇等小装饰物使用 cross billboard 形状，不再作为完整实体立方块渲染
 - 水和岩浆目前是静态液体方块，使用矮液面几何、透明材质和贴图滚动动画；真正流体扩散仍是后续阶段
+- 准星选中、破坏和放置使用 voxel DDA raycast，已和渲染 mesh/instanceId 解耦
 - 使用 `Uint8Array` 存储区块数据
 - 按玩家位置动态加载 `5 x 5` 个区块
 - 使用 `THREE.InstancedMesh` 渲染区块内的多种方块
