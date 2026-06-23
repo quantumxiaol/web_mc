@@ -282,6 +282,10 @@ const stampPool = (writer: ChunkWriter, centerX: number, centerZ: number, candid
       }
 
       const level = Math.min(centerHeight, WORLD_HEIGHT - 2)
+      for (let y = terrainHeight + 1; y < level; y += 1) {
+        setBlock(writer, worldX, y, worldZ, basinBlock)
+      }
+
       for (let y = level + 1; y <= terrainHeight; y += 1) {
         setBlock(writer, worldX, y, worldZ, BlockId.Air)
       }

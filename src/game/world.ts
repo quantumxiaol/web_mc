@@ -51,6 +51,8 @@ interface Chunk {
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
+const liquidGeometry = new BoxGeometry(1, 0.82, 1)
+liquidGeometry.translate(0, -0.09, 0)
 const blockMaterialMap = new Map<BlockId, BlockMaterial>(
   PLACEABLE_BLOCKS.map((definition) => [definition.id, createBlockMaterials(definition)] as const),
 )
@@ -415,8 +417,9 @@ export class VoxelWorld {
         continue
       }
 
-      const mesh = new InstancedMesh(blockGeometry, materials, instances.length)
       const renderLayer = getBlockRenderLayer(definition.id)
+      const geometry = renderLayer === 'liquid' ? liquidGeometry : blockGeometry
+      const mesh = new InstancedMesh(geometry, materials, instances.length)
       mesh.castShadow =
         definition.solid && renderLayer !== 'transparent' && renderLayer !== 'liquid'
       mesh.receiveShadow = renderLayer !== 'liquid'

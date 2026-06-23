@@ -28,6 +28,7 @@ import {
 import { DebugOverlay } from './game/debugOverlay'
 import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
+import { updateAnimatedMaterials } from './game/materials'
 import { VoxelWorld } from './game/world'
 
 const app = document.querySelector<HTMLDivElement>('#app')
@@ -695,6 +696,7 @@ function animate(timestamp?: number) {
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
 
+  updateAnimatedMaterials(deltaTime)
   world.rebuildDirtyChunks(2)
   lighting.update(camera.position)
   const hit = updateSelection()

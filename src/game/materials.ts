@@ -3,6 +3,7 @@ import {
   MeshStandardMaterial,
   NearestFilter,
   NearestMipmapNearestFilter,
+  RepeatWrapping,
   SRGBColorSpace,
   Texture,
   TextureLoader,
@@ -15,6 +16,17 @@ const assetBase = import.meta.env.BASE_URL
 const textureLoader = new TextureLoader()
 const textureCache = new Map<string, Texture>()
 const materialCache = new Map<string, MeshStandardMaterial>()
+const animatedTextures: Array<{
+  texture: Texture
+  speedX: number
+  speedY: number
+}> = []
+const animatedTextureKeys = new Set<string>()
+const animatedEmissiveMaterials: Array<{
+  material: MeshStandardMaterial
+  baseIntensity: number
+}> = []
+let animatedMaterialTime = 0
 
 const loadVoxelTexture = (path: string) => {
   const cached = textureCache.get(path)
@@ -56,6 +68,18 @@ const createFaceMaterial = (definition: BlockDefinition, texturePath: string) =>
     metalness: 0,
   })
 
+  if (definition.materialKind === 'liquid' && !animatedTextureKeys.has(cacheKey)) {
+    texture.wrapS = RepeatWrapping
+    texture.wrapT = RepeatWrapping
+    texture.needsUpdate = true
+    animatedTextures.push({
+      texture,
+      speedX: definition.key === 'lava' ? 0.015 : 0.008,
+      speedY: definition.key === 'lava' ? 0.025 : 0.012,
+    })
+    animatedTextureKeys.add(cacheKey)
+  }
+
   if (definition.materialKind === 'alphaTest') {
     material.alphaTest = 0.42
     material.transparent = false
@@ -78,6 +102,12 @@ const createFaceMaterial = (definition: BlockDefinition, texturePath: string) =>
     material.emissive = new Color(definition.emissiveColor)
     material.emissiveMap = texture
     material.emissiveIntensity = definition.emitsLight
+    if (definition.materialKind === 'liquid') {
+      animatedEmissiveMaterials.push({
+        material,
+        baseIntensity: definition.emitsLight,
+      })
+    }
   }
 
   materialCache.set(cacheKey, material)
@@ -98,4 +128,18 @@ export const createBlockMaterials = (definition: BlockDefinition): BlockMaterial
   const bottom = createFaceMaterial(definition, bottomPath)
 
   return [side, side, top, bottom, side, side]
+}
+
+export const updateAnimatedMaterials = (deltaTime: number) => {
+  animatedMaterialTime += deltaTime
+
+  for (const item of animatedTextures) {
+    item.texture.offset.x = (item.texture.offset.x + item.speedX * deltaTime) % 1
+    item.texture.offset.y = (item.texture.offset.y + item.speedY * deltaTime) % 1
+  }
+
+  const pulse = 0.88 + Math.sin(animatedMaterialTime * 2.5) * 0.12
+  for (const item of animatedEmissiveMaterials) {
+    item.material.emissiveIntensity = item.baseIntensity * pulse
+  }
 }
