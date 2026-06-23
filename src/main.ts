@@ -166,6 +166,7 @@ app.innerHTML = `
         <span>1-${HOTBAR_SIZE} 切换快捷栏</span>
         <span>滚轮切换槽位</span>
         <span>E 方块面板</span>
+        <span>F2 截图</span>
         <span>F3/\` 调试</span>
         <span>F4/P 图形档位</span>
         <span>G 切换飞行/步行</span>
@@ -173,6 +174,7 @@ app.innerHTML = `
         <span>Esc 解锁鼠标</span>
       </div>
     </section>
+    <div id="screenshot-toast" class="screenshot-toast hidden" aria-live="polite"></div>
     <section class="hotbar-layer">
       <div id="hotbar" class="hotbar">${hotbarMarkup}</div>
       <p id="hotbar-label" class="hotbar-label"></p>
@@ -211,6 +213,7 @@ const startButton = getRequiredElement<HTMLButtonElement>('#start-button')
 const modeLine = getRequiredElement<HTMLParagraphElement>('#mode-line')
 const coordsLine = getRequiredElement<HTMLParagraphElement>('#coords-line')
 const worldLine = getRequiredElement<HTMLParagraphElement>('#world-line')
+const screenshotToast = getRequiredElement<HTMLDivElement>('#screenshot-toast')
 const hotbar = getRequiredElement<HTMLDivElement>('#hotbar')
 const hotbarLabel = getRequiredElement<HTMLParagraphElement>('#hotbar-label')
 const paletteLayer = getRequiredElement<HTMLElement>('#palette-layer')
@@ -300,6 +303,8 @@ let frameMs = 0
 let fpsFrames = 0
 let fpsTime = 0
 let lastWheelSlotChange = 0
+let screenshotRequested = false
+let screenshotToastTimeout: number | undefined
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -426,6 +431,66 @@ function setSelectedBlockByIndex(index: number) {
   const normalizedIndex = ((index % hotbarBlockIds.length) + hotbarBlockIds.length) % hotbarBlockIds.length
   selectedHotbarSlot = normalizedIndex
   updateHotbarSelection()
+}
+
+function formatScreenshotTimestamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`,
+  ].join('-')
+}
+
+function showScreenshotToast(message: string) {
+  screenshotToast.textContent = message
+  screenshotToast.classList.remove('hidden')
+
+  if (screenshotToastTimeout !== undefined) {
+    window.clearTimeout(screenshotToastTimeout)
+  }
+
+  screenshotToastTimeout = window.setTimeout(() => {
+    screenshotToast.classList.add('hidden')
+  }, 1800)
+}
+
+function downloadScreenshotUrl(url: string, filename: string) {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.append(link)
+  link.click()
+  link.remove()
+}
+
+function saveCanvasScreenshot() {
+  const filename = `web_mc-${formatScreenshotTimestamp()}.png`
+  const canvas = renderer.domElement
+
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      try {
+        downloadScreenshotUrl(canvas.toDataURL('image/png'), filename)
+        showScreenshotToast(`已保存截图：${filename}`)
+      } catch {
+        showScreenshotToast('截图失败')
+      }
+      return
+    }
+
+    const url = URL.createObjectURL(blob)
+    downloadScreenshotUrl(url, filename)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    showScreenshotToast(`已保存截图：${filename}`)
+  }, 'image/png')
+}
+
+function requestScreenshot() {
+  screenshotRequested = true
+  showScreenshotToast('正在保存截图...')
 }
 
 function handleGameWheel(event: WheelEvent) {
@@ -702,6 +767,10 @@ function animate(timestamp?: number) {
   const hit = updateSelection()
   refreshHud()
   renderer.render(scene, camera)
+  if (screenshotRequested) {
+    screenshotRequested = false
+    saveCanvasScreenshot()
+  }
   debugOverlay.update({
     enabled: debugEnabled,
     fps,
@@ -749,6 +818,16 @@ window.addEventListener('keydown', (event) => {
 
   if (!editableTarget && isSystemShortcutEvent(event)) {
     clearActiveInput()
+    return
+  }
+
+  if (
+    !editableTarget &&
+    (event.code === 'F2' || event.key === 'F2') &&
+    !event.repeat
+  ) {
+    requestScreenshot()
+    event.preventDefault()
     return
   }
 
