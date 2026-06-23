@@ -68,6 +68,7 @@ export class DebugOverlay {
       `Loaded chunks: ${state.world.getLoadedChunkCount()}`,
       `Loaded blocks: ${state.world.getLoadedBlockCount()}`,
       `Rendered blocks: ${state.world.getRenderedBlockCount()}`,
+      `Edited chunks: ${state.world.getEditedChunkCount()} | saved ${state.world.getSavedEditedChunkCount()}`,
       `Chunk size: ${CHUNK_SIZE}`,
       `World height: ${WORLD_HEIGHT}`,
       `Load radius: ${LOAD_RADIUS}`,

@@ -113,6 +113,18 @@ const mod = (value: number, size: number) => ((value % size) + size) % size
 const blockIndex = (x: number, y: number, z: number) =>
   y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x
 
+const countLoadedBlocks = (data: Uint8Array) => {
+  let count = 0
+
+  for (let index = 0; index < data.length; index += 1) {
+    if (data[index] !== BlockId.Air) {
+      count += 1
+    }
+  }
+
+  return count
+}
+
 const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   opaque: 0,
   cutout: 1,
@@ -124,6 +136,8 @@ const renderOrderByLayer: Record<BlockRenderLayer, number> = {
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
   private readonly dirtyChunks = new Set<string>()
+  private readonly editedChunkKeys = new Set<string>()
+  private readonly editedChunkData = new Map<string, Uint8Array>()
   private readonly scene: Scene
   private loadedBlockCount = 0
   private renderedBlockCount = 0
@@ -164,6 +178,14 @@ export class VoxelWorld {
 
   getRenderedBlockCount() {
     return this.renderedBlockCount
+  }
+
+  getEditedChunkCount() {
+    return this.editedChunkKeys.size
+  }
+
+  getSavedEditedChunkCount() {
+    return this.editedChunkData.size
   }
 
   getMeshStats(): WorldMeshStats {
@@ -236,6 +258,7 @@ export class VoxelWorld {
       this.loadedBlockCount -= 1
     }
 
+    this.editedChunkKeys.add(chunkKey(cx, cz))
     this.markChunkDirty(cx, cz)
 
     if (lx === 0) {
@@ -419,7 +442,10 @@ export class VoxelWorld {
       return cached
     }
 
-    const generated = generateChunk(cx, cz)
+    const savedData = this.editedChunkData.get(key)
+    const generated = savedData
+      ? { data: savedData.slice(), loadedBlockCount: countLoadedBlocks(savedData) }
+      : generateChunk(cx, cz)
     const chunk: Chunk = {
       cx,
       cz,
@@ -439,6 +465,10 @@ export class VoxelWorld {
 
   private unloadChunk(key: string, chunk: Chunk) {
     const { cx, cz } = chunk
+
+    if (this.editedChunkKeys.has(key)) {
+      this.editedChunkData.set(key, chunk.data.slice())
+    }
 
     this.removeChunkMeshes(chunk)
     this.dirtyChunks.delete(key)
