@@ -4,12 +4,14 @@ import {
   Mesh,
 } from 'three'
 import { BlockId, isBlockOpaqueOccluder } from './blocks'
+import { fluidLevelToHeight } from './fluids'
 import type { BlockMaterial } from './materials'
 
 interface LiquidCell {
   x: number
   y: number
   z: number
+  fluidLevel?: number
 }
 
 interface BuildLiquidMeshOptions {
@@ -17,9 +19,8 @@ interface BuildLiquidMeshOptions {
   cells: LiquidCell[]
   material: BlockMaterial
   getBlock: (x: number, y: number, z: number) => BlockId
+  getFluidLevel: (x: number, y: number, z: number) => number
 }
-
-const LIQUID_HEIGHT = 0.86
 
 const horizontalNeighbors = [
   { dx: 1, dz: 0, face: 'east' },
@@ -36,16 +37,30 @@ export const hasVisibleLiquidFaces = (
   x: number,
   y: number,
   z: number,
+  fluidLevel: number,
   getBlock: (x: number, y: number, z: number) => BlockId,
+  getFluidLevel: (x: number, y: number, z: number) => number,
 ) => {
   if (shouldDrawFaceAgainst(getBlock(x, y + 1, z), blockId)) {
     return true
   }
 
-  return horizontalNeighbors.some(({ dx, dz }) => shouldDrawFaceAgainst(getBlock(x + dx, y, z + dz), blockId))
+  const height = fluidLevelToHeight(fluidLevel)
+
+  return horizontalNeighbors.some(({ dx, dz }) => {
+    const neighborBlockId = getBlock(x + dx, y, z + dz)
+    if (shouldDrawFaceAgainst(neighborBlockId, blockId)) {
+      return true
+    }
+    if (neighborBlockId !== blockId) {
+      return false
+    }
+
+    return fluidLevelToHeight(getFluidLevel(x + dx, y, z + dz)) < height
+  })
 }
 
-export const buildLiquidMesh = ({ blockId, cells, material, getBlock }: BuildLiquidMeshOptions) => {
+export const buildLiquidMesh = ({ blockId, cells, material, getBlock, getFluidLevel }: BuildLiquidMeshOptions) => {
   const positions: number[] = []
   const uvs: number[] = []
   const indices: number[] = []
@@ -61,7 +76,7 @@ export const buildLiquidMesh = ({ blockId, cells, material, getBlock }: BuildLiq
     const x0 = cell.x
     const x1 = cell.x + 1
     const y0 = cell.y
-    const y1 = cell.y + LIQUID_HEIGHT
+    const y1 = cell.y + fluidLevelToHeight(cell.fluidLevel ?? 0)
     const z0 = cell.z
     const z1 = cell.z + 1
 
@@ -75,37 +90,47 @@ export const buildLiquidMesh = ({ blockId, cells, material, getBlock }: BuildLiq
     }
 
     for (const { dx, dz, face } of horizontalNeighbors) {
-      if (!shouldDrawFaceAgainst(getBlock(cell.x + dx, cell.y, cell.z + dz), blockId)) {
+      const neighborBlockId = getBlock(cell.x + dx, cell.y, cell.z + dz)
+      let sideBottom = y0
+
+      if (neighborBlockId === blockId) {
+        const neighborLevel = getFluidLevel(cell.x + dx, cell.y, cell.z + dz)
+        sideBottom = cell.y + fluidLevelToHeight(neighborLevel)
+      } else if (!shouldDrawFaceAgainst(neighborBlockId, blockId)) {
+        continue
+      }
+
+      if (sideBottom >= y1) {
         continue
       }
 
       if (face === 'east') {
         pushQuad([
-          x1, y0, z0,
+          x1, sideBottom, z0,
           x1, y1, z0,
           x1, y1, z1,
-          x1, y0, z1,
+          x1, sideBottom, z1,
         ])
       } else if (face === 'west') {
         pushQuad([
-          x0, y0, z1,
+          x0, sideBottom, z1,
           x0, y1, z1,
           x0, y1, z0,
-          x0, y0, z0,
+          x0, sideBottom, z0,
         ])
       } else if (face === 'south') {
         pushQuad([
-          x1, y0, z1,
+          x1, sideBottom, z1,
           x1, y1, z1,
           x0, y1, z1,
-          x0, y0, z1,
+          x0, sideBottom, z1,
         ])
       } else {
         pushQuad([
-          x0, y0, z0,
+          x0, sideBottom, z0,
           x0, y1, z0,
           x1, y1, z0,
-          x1, y0, z0,
+          x1, sideBottom, z0,
         ])
       }
     }

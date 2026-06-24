@@ -756,6 +756,7 @@ function animate(timestamp?: number) {
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
 
+  world.updateFluids(64)
   updateAnimatedMaterials(deltaTime)
   world.rebuildDirtyChunks(2)
   lighting.update(camera.position)

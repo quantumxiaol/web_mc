@@ -50,6 +50,7 @@ export class DebugOverlay {
     const chunkZ = Math.floor(Math.floor(position.z) / CHUNK_SIZE)
     const actualDpr = window.innerWidth > 0 ? canvas.width / window.innerWidth : window.devicePixelRatio
     const meshStats = state.world.getMeshStats()
+    const fluidStats = state.world.getFluidStats()
 
     this.el.textContent = [
       'WebMC Debug',
@@ -69,6 +70,7 @@ export class DebugOverlay {
       `Loaded blocks: ${state.world.getLoadedBlockCount()}`,
       `Rendered blocks: ${state.world.getRenderedBlockCount()}`,
       `Edited chunks: ${state.world.getEditedChunkCount()} | saved ${state.world.getSavedEditedChunkCount()}`,
+      `Fluids: active ${fluidStats.active} | queued ${fluidStats.queued} | processed ${fluidStats.processed} | changed ${fluidStats.changed}`,
       `Chunk size: ${CHUNK_SIZE}`,
       `World height: ${WORLD_HEIGHT}`,
       `Load radius: ${LOAD_RADIUS}`,

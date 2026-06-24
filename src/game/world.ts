@@ -14,11 +14,13 @@ import {
   getBlockShape,
   getBlockRenderLayer,
   isBlockOpaqueOccluder,
+  isBlockLiquid,
   isBlockRaycastTarget,
   isBlockSolid,
   type BlockDefinition,
   type BlockRenderLayer,
 } from './blocks'
+import { FLUID_MAX_LEVEL, FLUID_NONE, FLUID_SOURCE_LEVEL } from './fluids'
 import { buildLiquidMesh, hasVisibleLiquidFaces } from './liquidMesh'
 import { createBlockMaterials, type BlockMaterial } from './materials'
 import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT } from './worldConstants'
@@ -53,12 +55,29 @@ export interface WorldMeshStats {
   emissive: number
 }
 
+export interface WorldFluidStats {
+  active: number
+  queued: number
+  processed: number
+  changed: number
+}
+
+interface RenderBlockPosition extends BlockPosition {
+  fluidLevel?: number
+}
+
+interface SavedChunkData {
+  data: Uint8Array
+  fluidLevels: Uint8Array
+}
+
 interface Chunk {
   cx: number
   cz: number
   data: Uint8Array
+  fluidLevels: Uint8Array
   meshes: ChunkMesh[]
-  instancesByBlock: Partial<Record<BlockId, BlockPosition[]>>
+  instancesByBlock: Partial<Record<BlockId, RenderBlockPosition[]>>
   loadedBlockCount: number
   renderedBlockCount: number
 }
@@ -125,6 +144,31 @@ const countLoadedBlocks = (data: Uint8Array) => {
   return count
 }
 
+const createInitialFluidLevels = (data: Uint8Array) => {
+  const fluidLevels = new Uint8Array(data.length)
+  fluidLevels.fill(FLUID_NONE)
+
+  for (let index = 0; index < data.length; index += 1) {
+    if (isBlockLiquid(data[index] as BlockId)) {
+      fluidLevels[index] = FLUID_SOURCE_LEVEL
+    }
+  }
+
+  return fluidLevels
+}
+
+const fluidQueueKey = (x: number, y: number, z: number) => `${x},${y},${z}`
+
+const parseFluidQueueKey = (key: string): BlockPosition | null => {
+  const [x, y, z] = key.split(',').map(Number)
+
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null
+  }
+
+  return { x, y, z }
+}
+
 const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   opaque: 0,
   cutout: 1,
@@ -137,10 +181,13 @@ export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
   private readonly dirtyChunks = new Set<string>()
   private readonly editedChunkKeys = new Set<string>()
-  private readonly editedChunkData = new Map<string, Uint8Array>()
+  private readonly editedChunkData = new Map<string, SavedChunkData>()
+  private readonly fluidUpdateQueue = new Set<string>()
   private readonly scene: Scene
   private loadedBlockCount = 0
   private renderedBlockCount = 0
+  private lastFluidUpdatesProcessed = 0
+  private lastFluidCellsChanged = 0
 
   constructor(scene: Scene) {
     this.scene = scene
@@ -188,6 +235,25 @@ export class VoxelWorld {
     return this.editedChunkData.size
   }
 
+  getFluidStats(): WorldFluidStats {
+    let active = 0
+
+    for (const chunk of this.chunks.values()) {
+      for (let index = 0; index < chunk.fluidLevels.length; index += 1) {
+        if (chunk.fluidLevels[index] !== FLUID_NONE && isBlockLiquid(chunk.data[index] as BlockId)) {
+          active += 1
+        }
+      }
+    }
+
+    return {
+      active,
+      queued: this.fluidUpdateQueue.size,
+      processed: this.lastFluidUpdatesProcessed,
+      changed: this.lastFluidCellsChanged,
+    }
+  }
+
   getMeshStats(): WorldMeshStats {
     const stats: WorldMeshStats = {
       total: 0,
@@ -229,6 +295,23 @@ export class VoxelWorld {
     return (chunk.data[blockIndex(lx, worldY, lz)] ?? BlockId.Air) as BlockId
   }
 
+  getFluidLevel(worldX: number, worldY: number, worldZ: number) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return FLUID_NONE
+    }
+
+    const cx = floorDiv(worldX, CHUNK_SIZE)
+    const cz = floorDiv(worldZ, CHUNK_SIZE)
+    const chunk = this.chunks.get(chunkKey(cx, cz))
+    if (!chunk) {
+      return FLUID_NONE
+    }
+
+    const lx = mod(worldX, CHUNK_SIZE)
+    const lz = mod(worldZ, CHUNK_SIZE)
+    return chunk.fluidLevels[blockIndex(lx, worldY, lz)] ?? FLUID_NONE
+  }
+
   setBlock(worldX: number, worldY: number, worldZ: number, blockId: BlockId) {
     if (worldY < 0 || worldY >= WORLD_HEIGHT) {
       return false
@@ -250,6 +333,7 @@ export class VoxelWorld {
     }
 
     chunk.data[index] = blockId
+    chunk.fluidLevels[index] = isBlockLiquid(blockId) ? FLUID_SOURCE_LEVEL : FLUID_NONE
     if (previousBlockId === BlockId.Air && blockId !== BlockId.Air) {
       chunk.loadedBlockCount += 1
       this.loadedBlockCount += 1
@@ -258,21 +342,7 @@ export class VoxelWorld {
       this.loadedBlockCount -= 1
     }
 
-    this.editedChunkKeys.add(chunkKey(cx, cz))
-    this.markChunkDirty(cx, cz)
-
-    if (lx === 0) {
-      this.markChunkDirty(cx - 1, cz)
-    }
-    if (lx === CHUNK_SIZE - 1) {
-      this.markChunkDirty(cx + 1, cz)
-    }
-    if (lz === 0) {
-      this.markChunkDirty(cx, cz - 1)
-    }
-    if (lz === CHUNK_SIZE - 1) {
-      this.markChunkDirty(cx, cz + 1)
-    }
+    this.markChangedBlock(cx, cz, lx, lz, worldX, worldY, worldZ)
 
     return true
   }
@@ -295,6 +365,29 @@ export class VoxelWorld {
     }
 
     return rebuilt
+  }
+
+  updateFluids(maxUpdates = 48) {
+    let processed = 0
+    let changed = 0
+
+    while (processed < maxUpdates && this.fluidUpdateQueue.size > 0) {
+      const key = this.fluidUpdateQueue.values().next().value
+      if (key === undefined) {
+        break
+      }
+
+      this.fluidUpdateQueue.delete(key)
+      const position = parseFluidQueueKey(key)
+      if (position && this.updateFluidCell(position.x, position.y, position.z)) {
+        changed += 1
+      }
+      processed += 1
+    }
+
+    this.lastFluidUpdatesProcessed = processed
+    this.lastFluidCellsChanged = changed
+    return changed
   }
 
   intersectsSolid(
@@ -401,6 +494,232 @@ export class VoxelWorld {
     this.dirtyChunks.add(chunkKey(cx, cz))
   }
 
+  private markChangedBlock(
+    cx: number,
+    cz: number,
+    lx: number,
+    lz: number,
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ) {
+    this.editedChunkKeys.add(chunkKey(cx, cz))
+    this.markChunkDirty(cx, cz)
+
+    if (lx === 0) {
+      this.markChunkDirty(cx - 1, cz)
+    }
+    if (lx === CHUNK_SIZE - 1) {
+      this.markChunkDirty(cx + 1, cz)
+    }
+    if (lz === 0) {
+      this.markChunkDirty(cx, cz - 1)
+    }
+    if (lz === CHUNK_SIZE - 1) {
+      this.markChunkDirty(cx, cz + 1)
+    }
+
+    this.queueFluidAround(worldX, worldY, worldZ)
+  }
+
+  private getLoadedChunkAt(worldX: number, worldZ: number) {
+    const cx = floorDiv(worldX, CHUNK_SIZE)
+    const cz = floorDiv(worldZ, CHUNK_SIZE)
+    const chunk = this.chunks.get(chunkKey(cx, cz))
+
+    if (!chunk) {
+      return null
+    }
+
+    return {
+      chunk,
+      cx,
+      cz,
+      lx: mod(worldX, CHUNK_SIZE),
+      lz: mod(worldZ, CHUNK_SIZE),
+    }
+  }
+
+  private queueFluidUpdate(worldX: number, worldY: number, worldZ: number) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT || !this.getLoadedChunkAt(worldX, worldZ)) {
+      return
+    }
+
+    this.fluidUpdateQueue.add(fluidQueueKey(worldX, worldY, worldZ))
+  }
+
+  private queueFluidAround(worldX: number, worldY: number, worldZ: number) {
+    const neighbors = [
+      [0, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ] as const
+
+    for (const [dx, dy, dz] of neighbors) {
+      this.queueFluidUpdate(worldX + dx, worldY + dy, worldZ + dz)
+    }
+  }
+
+  private setFluidBlock(worldX: number, worldY: number, worldZ: number, blockId: BlockId, fluidLevel: number) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return false
+    }
+    if (blockId !== BlockId.Air && !isBlockLiquid(blockId)) {
+      return false
+    }
+
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded) {
+      return false
+    }
+
+    const { chunk, cx, cz, lx, lz } = loaded
+    const index = blockIndex(lx, worldY, lz)
+    const previousBlockId = chunk.data[index] as BlockId
+    const previousFluidLevel = chunk.fluidLevels[index] ?? FLUID_NONE
+    const nextFluidLevel = isBlockLiquid(blockId) ? fluidLevel : FLUID_NONE
+
+    if (previousBlockId === blockId && previousFluidLevel === nextFluidLevel) {
+      return false
+    }
+
+    chunk.data[index] = blockId
+    chunk.fluidLevels[index] = nextFluidLevel
+    if (previousBlockId === BlockId.Air && blockId !== BlockId.Air) {
+      chunk.loadedBlockCount += 1
+      this.loadedBlockCount += 1
+    } else if (previousBlockId !== BlockId.Air && blockId === BlockId.Air) {
+      chunk.loadedBlockCount -= 1
+      this.loadedBlockCount -= 1
+    }
+
+    this.markChangedBlock(cx, cz, lx, lz, worldX, worldY, worldZ)
+    return true
+  }
+
+  private canFluidFlowInto(blockId: BlockId, worldX: number, worldY: number, worldZ: number) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return false
+    }
+
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded) {
+      return false
+    }
+
+    const targetIndex = blockIndex(loaded.lx, worldY, loaded.lz)
+    const targetBlockId = loaded.chunk.data[targetIndex] as BlockId
+
+    if (targetBlockId === BlockId.Air) {
+      return true
+    }
+
+    return targetBlockId === blockId && loaded.chunk.fluidLevels[targetIndex] !== FLUID_SOURCE_LEVEL
+  }
+
+  private tryFlowInto(blockId: BlockId, worldX: number, worldY: number, worldZ: number, fluidLevel: number) {
+    if (!this.canFluidFlowInto(blockId, worldX, worldY, worldZ)) {
+      return false
+    }
+
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded) {
+      return false
+    }
+
+    const targetIndex = blockIndex(loaded.lx, worldY, loaded.lz)
+    const targetBlockId = loaded.chunk.data[targetIndex] as BlockId
+    const targetFluidLevel = loaded.chunk.fluidLevels[targetIndex] ?? FLUID_NONE
+
+    if (targetBlockId === BlockId.Air || fluidLevel < targetFluidLevel) {
+      return this.setFluidBlock(worldX, worldY, worldZ, blockId, fluidLevel)
+    }
+
+    return false
+  }
+
+  private getDesiredFluidLevel(blockId: BlockId, worldX: number, worldY: number, worldZ: number) {
+    let desiredLevel = FLUID_NONE
+    const aboveLevel = this.getFluidLevel(worldX, worldY + 1, worldZ)
+
+    if (this.getBlock(worldX, worldY + 1, worldZ) === blockId && aboveLevel !== FLUID_NONE) {
+      desiredLevel = Math.min(desiredLevel, Math.max(1, aboveLevel))
+    }
+
+    const neighbors = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const
+
+    for (const [dx, dz] of neighbors) {
+      const neighborLevel = this.getFluidLevel(worldX + dx, worldY, worldZ + dz)
+      if (
+        this.getBlock(worldX + dx, worldY, worldZ + dz) === blockId &&
+        neighborLevel !== FLUID_NONE &&
+        neighborLevel < FLUID_MAX_LEVEL
+      ) {
+        desiredLevel = Math.min(desiredLevel, neighborLevel + 1)
+      }
+    }
+
+    return desiredLevel
+  }
+
+  private updateFluidCell(worldX: number, worldY: number, worldZ: number) {
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded || worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return false
+    }
+
+    const index = blockIndex(loaded.lx, worldY, loaded.lz)
+    const blockId = loaded.chunk.data[index] as BlockId
+    const currentLevel = loaded.chunk.fluidLevels[index] ?? FLUID_NONE
+
+    if (!isBlockLiquid(blockId)) {
+      if (currentLevel !== FLUID_NONE) {
+        loaded.chunk.fluidLevels[index] = FLUID_NONE
+      }
+      return false
+    }
+
+    if (currentLevel === FLUID_NONE) {
+      return this.setFluidBlock(worldX, worldY, worldZ, blockId, FLUID_SOURCE_LEVEL)
+    }
+
+    if (currentLevel !== FLUID_SOURCE_LEVEL) {
+      const desiredLevel = this.getDesiredFluidLevel(blockId, worldX, worldY, worldZ)
+
+      if (desiredLevel === FLUID_NONE) {
+        return this.setFluidBlock(worldX, worldY, worldZ, BlockId.Air, FLUID_NONE)
+      }
+      if (desiredLevel !== currentLevel) {
+        return this.setFluidBlock(worldX, worldY, worldZ, blockId, desiredLevel)
+      }
+    }
+
+    let changed = false
+    const downwardLevel = Math.max(1, currentLevel)
+    if (this.tryFlowInto(blockId, worldX, worldY - 1, worldZ, downwardLevel)) {
+      changed = true
+    }
+
+    if (!this.canFluidFlowInto(blockId, worldX, worldY - 1, worldZ) && currentLevel < FLUID_MAX_LEVEL) {
+      const nextLevel = currentLevel + 1
+      changed = this.tryFlowInto(blockId, worldX + 1, worldY, worldZ, nextLevel) || changed
+      changed = this.tryFlowInto(blockId, worldX - 1, worldY, worldZ, nextLevel) || changed
+      changed = this.tryFlowInto(blockId, worldX, worldY, worldZ + 1, nextLevel) || changed
+      changed = this.tryFlowInto(blockId, worldX, worldY, worldZ - 1, nextLevel) || changed
+    }
+
+    return changed
+  }
+
   private markLoadedNeighborsDirty(cx: number, cz: number) {
     const neighbors = [
       [cx - 1, cz],
@@ -435,6 +754,48 @@ export class VoxelWorld {
     return false
   }
 
+  private seedFluidUpdates(chunk: Chunk) {
+    for (let y = 0; y < WORLD_HEIGHT; y += 1) {
+      for (let z = 0; z < CHUNK_SIZE; z += 1) {
+        for (let x = 0; x < CHUNK_SIZE; x += 1) {
+          const index = blockIndex(x, y, z)
+          if (isBlockLiquid(chunk.data[index] as BlockId)) {
+            this.queueFluidUpdate(chunk.cx * CHUNK_SIZE + x, y, chunk.cz * CHUNK_SIZE + z)
+          }
+        }
+      }
+    }
+  }
+
+  private seedLoadedNeighborFluidUpdates(cx: number, cz: number) {
+    const neighbors = [
+      [cx - 1, cz],
+      [cx + 1, cz],
+      [cx, cz - 1],
+      [cx, cz + 1],
+    ] as const
+
+    for (const [nx, nz] of neighbors) {
+      const neighborChunk = this.chunks.get(chunkKey(nx, nz))
+      if (neighborChunk) {
+        this.seedFluidUpdates(neighborChunk)
+      }
+    }
+  }
+
+  private removeQueuedFluidUpdatesForChunk(cx: number, cz: number) {
+    for (const key of this.fluidUpdateQueue) {
+      const position = parseFluidQueueKey(key)
+      if (
+        position &&
+        floorDiv(position.x, CHUNK_SIZE) === cx &&
+        floorDiv(position.z, CHUNK_SIZE) === cz
+      ) {
+        this.fluidUpdateQueue.delete(key)
+      }
+    }
+  }
+
   private loadChunk(cx: number, cz: number) {
     const key = chunkKey(cx, cz)
     const cached = this.chunks.get(key)
@@ -442,14 +803,19 @@ export class VoxelWorld {
       return cached
     }
 
-    const savedData = this.editedChunkData.get(key)
-    const generated = savedData
-      ? { data: savedData.slice(), loadedBlockCount: countLoadedBlocks(savedData) }
+    const savedChunk = this.editedChunkData.get(key)
+    const generated = savedChunk
+      ? {
+          data: savedChunk.data.slice(),
+          fluidLevels: savedChunk.fluidLevels.slice(),
+          loadedBlockCount: countLoadedBlocks(savedChunk.data),
+        }
       : generateChunk(cx, cz)
     const chunk: Chunk = {
       cx,
       cz,
       data: generated.data,
+      fluidLevels: 'fluidLevels' in generated ? generated.fluidLevels : createInitialFluidLevels(generated.data),
       meshes: [],
       instancesByBlock: {},
       loadedBlockCount: generated.loadedBlockCount,
@@ -459,6 +825,8 @@ export class VoxelWorld {
     this.chunks.set(key, chunk)
     this.loadedBlockCount += chunk.loadedBlockCount
     this.rebuildChunkMesh(chunk)
+    this.seedFluidUpdates(chunk)
+    this.seedLoadedNeighborFluidUpdates(cx, cz)
     this.markLoadedNeighborsDirty(cx, cz)
     return chunk
   }
@@ -467,9 +835,13 @@ export class VoxelWorld {
     const { cx, cz } = chunk
 
     if (this.editedChunkKeys.has(key)) {
-      this.editedChunkData.set(key, chunk.data.slice())
+      this.editedChunkData.set(key, {
+        data: chunk.data.slice(),
+        fluidLevels: chunk.fluidLevels.slice(),
+      })
     }
 
+    this.removeQueuedFluidUpdatesForChunk(cx, cz)
     this.removeChunkMeshes(chunk)
     this.dirtyChunks.delete(key)
     this.chunks.delete(key)
@@ -508,10 +880,17 @@ export class VoxelWorld {
           const worldX = chunk.cx * CHUNK_SIZE + x
           const worldZ = chunk.cz * CHUNK_SIZE + z
           const shape = getBlockShape(blockId)
+          const fluidLevel = chunk.fluidLevels[blockIndex(x, y, z)] ?? FLUID_NONE
           if (
             shape === 'liquid' &&
-            !hasVisibleLiquidFaces(blockId, worldX, y, worldZ, (blockX, blockY, blockZ) =>
-              this.getBlock(blockX, blockY, blockZ),
+            !hasVisibleLiquidFaces(
+              blockId,
+              worldX,
+              y,
+              worldZ,
+              fluidLevel,
+              (blockX, blockY, blockZ) => this.getBlock(blockX, blockY, blockZ),
+              (blockX, blockY, blockZ) => this.getFluidLevel(blockX, blockY, blockZ),
             )
           ) {
             continue
@@ -525,6 +904,7 @@ export class VoxelWorld {
             x: worldX,
             y,
             z: worldZ,
+            fluidLevel,
           })
           chunk.renderedBlockCount += 1
         }
@@ -548,6 +928,7 @@ export class VoxelWorld {
           cells: instances,
           material: materials,
           getBlock: (blockX, blockY, blockZ) => this.getBlock(blockX, blockY, blockZ),
+          getFluidLevel: (blockX, blockY, blockZ) => this.getFluidLevel(blockX, blockY, blockZ),
         })
 
         if (!mesh) {
