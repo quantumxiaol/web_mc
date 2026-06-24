@@ -20,7 +20,7 @@ import {
   type BlockDefinition,
   type BlockRenderLayer,
 } from './blocks'
-import { FLUID_MAX_LEVEL, FLUID_NONE, FLUID_SOURCE_LEVEL } from './fluids'
+import { FLUID_BLOCK_IDS, FLUID_NONE, FLUID_SOURCE_LEVEL, getFluidRule } from './fluids'
 import { buildLiquidMesh, hasVisibleLiquidFaces } from './liquidMesh'
 import { createBlockMaterials, type BlockMaterial } from './materials'
 import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT } from './worldConstants'
@@ -80,6 +80,11 @@ interface Chunk {
   instancesByBlock: Partial<Record<BlockId, RenderBlockPosition[]>>
   loadedBlockCount: number
   renderedBlockCount: number
+}
+
+interface MarkChangedBlockOptions {
+  markEdited?: boolean
+  queueFluid?: boolean
 }
 
 const blockGeometry = new BoxGeometry(1, 1, 1)
@@ -169,6 +174,8 @@ const parseFluidQueueKey = (key: string): BlockPosition | null => {
   return { x, y, z }
 }
 
+const ENABLE_WORLDGEN_FLUID_SIM = false
+
 const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   opaque: 0,
   cutout: 1,
@@ -182,7 +189,8 @@ export class VoxelWorld {
   private readonly dirtyChunks = new Set<string>()
   private readonly editedChunkKeys = new Set<string>()
   private readonly editedChunkData = new Map<string, SavedChunkData>()
-  private readonly fluidUpdateQueue = new Set<string>()
+  private readonly fluidUpdateQueues = new Map<BlockId, Set<string>>()
+  private readonly fluidTickAccumulators = new Map<BlockId, number>()
   private readonly scene: Scene
   private loadedBlockCount = 0
   private renderedBlockCount = 0
@@ -237,6 +245,7 @@ export class VoxelWorld {
 
   getFluidStats(): WorldFluidStats {
     let active = 0
+    let queued = 0
 
     for (const chunk of this.chunks.values()) {
       for (let index = 0; index < chunk.fluidLevels.length; index += 1) {
@@ -246,9 +255,13 @@ export class VoxelWorld {
       }
     }
 
+    for (const queue of this.fluidUpdateQueues.values()) {
+      queued += queue.size
+    }
+
     return {
       active,
-      queued: this.fluidUpdateQueue.size,
+      queued,
       processed: this.lastFluidUpdatesProcessed,
       changed: this.lastFluidCellsChanged,
     }
@@ -367,27 +380,53 @@ export class VoxelWorld {
     return rebuilt
   }
 
-  updateFluids(maxUpdates = 48) {
+  updateFluids(deltaTime: number) {
+    let totalProcessed = 0
+    let totalChanged = 0
+
+    for (const blockId of FLUID_BLOCK_IDS) {
+      const rule = getFluidRule(blockId)
+      const accumulated = (this.fluidTickAccumulators.get(blockId) ?? 0) + deltaTime
+      if (accumulated < rule.tickSeconds) {
+        this.fluidTickAccumulators.set(blockId, accumulated)
+        continue
+      }
+
+      this.fluidTickAccumulators.set(blockId, accumulated % rule.tickSeconds)
+      const stats = this.processFluidQueue(blockId, rule.maxUpdatesPerTick)
+      totalProcessed += stats.processed
+      totalChanged += stats.changed
+    }
+
+    this.lastFluidUpdatesProcessed = totalProcessed
+    this.lastFluidCellsChanged = totalChanged
+    return totalChanged
+  }
+
+  private processFluidQueue(blockId: BlockId, maxUpdates: number) {
+    const queue = this.getFluidQueue(blockId)
     let processed = 0
     let changed = 0
 
-    while (processed < maxUpdates && this.fluidUpdateQueue.size > 0) {
-      const key = this.fluidUpdateQueue.values().next().value
+    while (processed < maxUpdates && queue.size > 0) {
+      const key = queue.values().next().value
       if (key === undefined) {
         break
       }
 
-      this.fluidUpdateQueue.delete(key)
+      queue.delete(key)
       const position = parseFluidQueueKey(key)
-      if (position && this.updateFluidCell(position.x, position.y, position.z)) {
+      if (
+        position &&
+        this.getBlock(position.x, position.y, position.z) === blockId &&
+        this.updateFluidCell(position.x, position.y, position.z)
+      ) {
         changed += 1
       }
       processed += 1
     }
 
-    this.lastFluidUpdatesProcessed = processed
-    this.lastFluidCellsChanged = changed
-    return changed
+    return { processed, changed }
   }
 
   intersectsSolid(
@@ -502,8 +541,14 @@ export class VoxelWorld {
     worldX: number,
     worldY: number,
     worldZ: number,
+    options: MarkChangedBlockOptions = {},
   ) {
-    this.editedChunkKeys.add(chunkKey(cx, cz))
+    const { markEdited = true, queueFluid = true } = options
+
+    if (markEdited) {
+      this.editedChunkKeys.add(chunkKey(cx, cz))
+    }
+
     this.markChunkDirty(cx, cz)
 
     if (lx === 0) {
@@ -519,7 +564,9 @@ export class VoxelWorld {
       this.markChunkDirty(cx, cz + 1)
     }
 
-    this.queueFluidAround(worldX, worldY, worldZ)
+    if (queueFluid) {
+      this.queueFluidAround(worldX, worldY, worldZ)
+    }
   }
 
   private getLoadedChunkAt(worldX: number, worldZ: number) {
@@ -540,12 +587,32 @@ export class VoxelWorld {
     }
   }
 
+  private getFluidQueue(blockId: BlockId) {
+    let queue = this.fluidUpdateQueues.get(blockId)
+    if (!queue) {
+      queue = new Set<string>()
+      this.fluidUpdateQueues.set(blockId, queue)
+    }
+
+    return queue
+  }
+
   private queueFluidUpdate(worldX: number, worldY: number, worldZ: number) {
-    if (worldY < 0 || worldY >= WORLD_HEIGHT || !this.getLoadedChunkAt(worldX, worldZ)) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT) {
       return
     }
 
-    this.fluidUpdateQueue.add(fluidQueueKey(worldX, worldY, worldZ))
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded) {
+      return
+    }
+
+    const blockId = loaded.chunk.data[blockIndex(loaded.lx, worldY, loaded.lz)] as BlockId
+    if (!isBlockLiquid(blockId)) {
+      return
+    }
+
+    this.getFluidQueue(blockId).add(fluidQueueKey(worldX, worldY, worldZ))
   }
 
   private queueFluidAround(worldX: number, worldY: number, worldZ: number) {
@@ -597,7 +664,10 @@ export class VoxelWorld {
       this.loadedBlockCount -= 1
     }
 
-    this.markChangedBlock(cx, cz, lx, lz, worldX, worldY, worldZ)
+    this.markChangedBlock(cx, cz, lx, lz, worldX, worldY, worldZ, {
+      markEdited: false,
+      queueFluid: true,
+    })
     return true
   }
 
@@ -643,6 +713,7 @@ export class VoxelWorld {
   }
 
   private getDesiredFluidLevel(blockId: BlockId, worldX: number, worldY: number, worldZ: number) {
+    const { maxLevel } = getFluidRule(blockId)
     let desiredLevel = FLUID_NONE
     const aboveLevel = this.getFluidLevel(worldX, worldY + 1, worldZ)
 
@@ -662,7 +733,7 @@ export class VoxelWorld {
       if (
         this.getBlock(worldX + dx, worldY, worldZ + dz) === blockId &&
         neighborLevel !== FLUID_NONE &&
-        neighborLevel < FLUID_MAX_LEVEL
+        neighborLevel < maxLevel
       ) {
         desiredLevel = Math.min(desiredLevel, neighborLevel + 1)
       }
@@ -680,6 +751,7 @@ export class VoxelWorld {
     const index = blockIndex(loaded.lx, worldY, loaded.lz)
     const blockId = loaded.chunk.data[index] as BlockId
     const currentLevel = loaded.chunk.fluidLevels[index] ?? FLUID_NONE
+    const { maxLevel } = getFluidRule(blockId)
 
     if (!isBlockLiquid(blockId)) {
       if (currentLevel !== FLUID_NONE) {
@@ -709,7 +781,7 @@ export class VoxelWorld {
       changed = true
     }
 
-    if (!this.canFluidFlowInto(blockId, worldX, worldY - 1, worldZ) && currentLevel < FLUID_MAX_LEVEL) {
+    if (!this.canFluidFlowInto(blockId, worldX, worldY - 1, worldZ) && currentLevel < maxLevel) {
       const nextLevel = currentLevel + 1
       changed = this.tryFlowInto(blockId, worldX + 1, worldY, worldZ, nextLevel) || changed
       changed = this.tryFlowInto(blockId, worldX - 1, worldY, worldZ, nextLevel) || changed
@@ -784,14 +856,16 @@ export class VoxelWorld {
   }
 
   private removeQueuedFluidUpdatesForChunk(cx: number, cz: number) {
-    for (const key of this.fluidUpdateQueue) {
-      const position = parseFluidQueueKey(key)
-      if (
-        position &&
-        floorDiv(position.x, CHUNK_SIZE) === cx &&
-        floorDiv(position.z, CHUNK_SIZE) === cz
-      ) {
-        this.fluidUpdateQueue.delete(key)
+    for (const queue of this.fluidUpdateQueues.values()) {
+      for (const key of queue) {
+        const position = parseFluidQueueKey(key)
+        if (
+          position &&
+          floorDiv(position.x, CHUNK_SIZE) === cx &&
+          floorDiv(position.z, CHUNK_SIZE) === cz
+        ) {
+          queue.delete(key)
+        }
       }
     }
   }
@@ -825,8 +899,10 @@ export class VoxelWorld {
     this.chunks.set(key, chunk)
     this.loadedBlockCount += chunk.loadedBlockCount
     this.rebuildChunkMesh(chunk)
-    this.seedFluidUpdates(chunk)
-    this.seedLoadedNeighborFluidUpdates(cx, cz)
+    if (ENABLE_WORLDGEN_FLUID_SIM) {
+      this.seedFluidUpdates(chunk)
+      this.seedLoadedNeighborFluidUpdates(cx, cz)
+    }
     this.markLoadedNeighborsDirty(cx, cz)
     return chunk
   }

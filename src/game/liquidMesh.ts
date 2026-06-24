@@ -4,7 +4,7 @@ import {
   Mesh,
 } from 'three'
 import { BlockId, isBlockOpaqueOccluder } from './blocks'
-import { fluidLevelToHeight } from './fluids'
+import { fluidLevelToHeight, getFluidRule } from './fluids'
 import type { BlockMaterial } from './materials'
 
 interface LiquidCell {
@@ -41,11 +41,13 @@ export const hasVisibleLiquidFaces = (
   getBlock: (x: number, y: number, z: number) => BlockId,
   getFluidLevel: (x: number, y: number, z: number) => number,
 ) => {
+  const { maxLevel } = getFluidRule(blockId)
+
   if (shouldDrawFaceAgainst(getBlock(x, y + 1, z), blockId)) {
     return true
   }
 
-  const height = fluidLevelToHeight(fluidLevel)
+  const height = fluidLevelToHeight(fluidLevel, maxLevel)
 
   return horizontalNeighbors.some(({ dx, dz }) => {
     const neighborBlockId = getBlock(x + dx, y, z + dz)
@@ -56,11 +58,12 @@ export const hasVisibleLiquidFaces = (
       return false
     }
 
-    return fluidLevelToHeight(getFluidLevel(x + dx, y, z + dz)) < height
+    return fluidLevelToHeight(getFluidLevel(x + dx, y, z + dz), maxLevel) < height
   })
 }
 
 export const buildLiquidMesh = ({ blockId, cells, material, getBlock, getFluidLevel }: BuildLiquidMeshOptions) => {
+  const { maxLevel } = getFluidRule(blockId)
   const positions: number[] = []
   const uvs: number[] = []
   const indices: number[] = []
@@ -76,7 +79,7 @@ export const buildLiquidMesh = ({ blockId, cells, material, getBlock, getFluidLe
     const x0 = cell.x
     const x1 = cell.x + 1
     const y0 = cell.y
-    const y1 = cell.y + fluidLevelToHeight(cell.fluidLevel ?? 0)
+    const y1 = cell.y + fluidLevelToHeight(cell.fluidLevel ?? 0, maxLevel)
     const z0 = cell.z
     const z1 = cell.z + 1
 
@@ -95,7 +98,7 @@ export const buildLiquidMesh = ({ blockId, cells, material, getBlock, getFluidLe
 
       if (neighborBlockId === blockId) {
         const neighborLevel = getFluidLevel(cell.x + dx, cell.y, cell.z + dz)
-        sideBottom = cell.y + fluidLevelToHeight(neighborLevel)
+        sideBottom = cell.y + fluidLevelToHeight(neighborLevel, maxLevel)
       } else if (!shouldDrawFaceAgainst(neighborBlockId, blockId)) {
         continue
       }
