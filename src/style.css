@@ -66,6 +66,42 @@ button {
   -webkit-touch-callout: none;
 }
 
+.liquid-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    background 180ms ease;
+}
+
+.liquid-overlay.is-water {
+  opacity: 0.24;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(107, 210, 255, 0.1), transparent 34%),
+    linear-gradient(180deg, rgba(26, 119, 199, 0.18), rgba(19, 73, 139, 0.28));
+}
+
+.liquid-overlay.is-lava {
+  opacity: 0.34;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(255, 223, 121, 0.2), transparent 30%),
+    linear-gradient(180deg, rgba(255, 112, 28, 0.22), rgba(142, 30, 10, 0.42));
+  animation: lava-overlay-pulse 1.45s ease-in-out infinite alternate;
+}
+
+@keyframes lava-overlay-pulse {
+  from {
+    opacity: 0.27;
+  }
+
+  to {
+    opacity: 0.4;
+  }
+}
+
 .hud {
   position: absolute;
   inset-inline: 24px;

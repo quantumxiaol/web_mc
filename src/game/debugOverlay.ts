@@ -10,6 +10,8 @@ export interface DebugOverlayState {
   mode: string
   selectedBlock: string
   target: string
+  playerLiquid: string
+  playerLiquidSpeedMultiplier: number
   yaw: number
   pitch: number
   camera: PerspectiveCamera
@@ -66,6 +68,7 @@ export class DebugOverlay {
       `Resolution: ${window.innerWidth}x${window.innerHeight} CSS | ${canvas.width}x${canvas.height} buffer | DPR ${actualDpr.toFixed(2)}`,
       `PointerLock: ${document.pointerLockElement === canvas ? 'yes' : 'no'}`,
       `Mode: ${state.mode}`,
+      `Environment: ${state.playerLiquid} | move x${state.playerLiquidSpeedMultiplier.toFixed(2)}`,
       `Position: x=${position.x.toFixed(2)} y=${position.y.toFixed(2)} z=${position.z.toFixed(2)}`,
       `Block: x=${Math.floor(position.x)} y=${Math.floor(position.y)} z=${Math.floor(position.z)}`,
       `Chunk: cx=${chunkX} cz=${chunkZ}`,

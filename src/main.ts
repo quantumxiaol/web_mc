@@ -29,6 +29,12 @@ import { configureEmissiveLights } from './game/emissiveLights'
 import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
 import { updateAnimatedMaterials } from './game/materials'
+import {
+  getDominantPlayerLiquidKind,
+  getPlayerLiquidProfile,
+  type PlayerLiquidKind,
+  type PlayerLiquidProfile,
+} from './game/playerLiquid'
 import { configurePostProcessing } from './game/postProcessing'
 import { VoxelWorld, type SavedChunkPayload } from './game/world'
 
@@ -171,6 +177,7 @@ const paletteMarkup = PLACEABLE_BLOCKS.map((block) => {
 app.innerHTML = `
   <div class="shell">
     <div id="viewport" class="viewport"></div>
+    <div id="liquid-overlay" class="liquid-overlay" aria-hidden="true"></div>
     <div class="crosshair" aria-hidden="true"></div>
     <section class="hud hud-top">
       <div class="panel">
@@ -244,6 +251,7 @@ app.innerHTML = `
 
 const shell = getRequiredElement<HTMLDivElement>('.shell')
 const viewport = getRequiredElement<HTMLDivElement>('#viewport')
+const liquidOverlay = getRequiredElement<HTMLDivElement>('#liquid-overlay')
 const lockScreen = getRequiredElement<HTMLDivElement>('#lock-screen')
 const startButton = getRequiredElement<HTMLButtonElement>('#start-button')
 const modeLine = getRequiredElement<HTMLParagraphElement>('#mode-line')
@@ -351,6 +359,8 @@ let screenshotRequested = false
 let screenshotToastTimeout: number | undefined
 let fluidPaused = false
 let fluidStepRequested = false
+let playerLiquidKind: PlayerLiquidKind = 'none'
+let playerLiquidProfile: PlayerLiquidProfile = getPlayerLiquidProfile(playerLiquidKind)
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -430,6 +440,24 @@ const getPlayerBounds = (nextPosition = camera.position) => ({
   minZ: nextPosition.z - playerRadius,
   maxZ: nextPosition.z + playerRadius,
 })
+
+function updatePlayerLiquidState() {
+  const x = Math.floor(camera.position.x)
+  const z = Math.floor(camera.position.z)
+  const feetY = Math.floor(camera.position.y - eyeHeight + 0.15)
+  const torsoY = Math.floor(camera.position.y - eyeHeight + playerHeight * 0.58)
+  const eyeY = Math.floor(camera.position.y - 0.08)
+  const nextLiquidKind = getDominantPlayerLiquidKind([
+    world.getBlock(x, feetY, z),
+    world.getBlock(x, torsoY, z),
+    world.getBlock(x, eyeY, z),
+  ])
+
+  playerLiquidKind = nextLiquidKind
+  playerLiquidProfile = getPlayerLiquidProfile(nextLiquidKind)
+  liquidOverlay.classList.toggle('is-water', nextLiquidKind === 'water')
+  liquidOverlay.classList.toggle('is-lava', nextLiquidKind === 'lava')
+}
 
 function updateCameraRotation() {
   lookEuler.set(pitch, yaw, 0)
@@ -891,7 +919,9 @@ function canPlaceBlock(x: number, y: number, z: number) {
 
 function refreshHud() {
   const mode = isFlying ? '飞行' : `步行${isGrounded ? '（落地）' : '（空中）'}`
-  modeLine.textContent = `模式：${mode}`
+  const liquidLabel =
+    playerLiquidKind === 'water' ? ' | 水中' : playerLiquidKind === 'lava' ? ' | 岩浆中' : ''
+  modeLine.textContent = `模式：${mode}${liquidLabel}`
   coordsLine.textContent = `坐标：${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}`
   worldLine.textContent = `区块：${world.getLoadedChunkCount()} | 方块：${world.getLoadedBlockCount()} | 可见：${world.getRenderedBlockCount()}`
 }
@@ -1024,22 +1054,41 @@ function updateMovement(deltaTime: number) {
 
   if (isFlying) {
     const vertical = (keys.has('Space') ? 1 : 0) - (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0)
-    moveDirection.multiplyScalar(flySpeed * deltaTime)
-    moveDirection.addScaledVector(up, vertical * flySpeed * deltaTime)
+    const liquidSpeed = flySpeed * playerLiquidProfile.speedMultiplier
+    moveDirection.multiplyScalar(liquidSpeed * deltaTime)
+    moveDirection.addScaledVector(up, vertical * liquidSpeed * deltaTime)
     camera.position.add(moveDirection)
     verticalVelocity = 0
     isGrounded = false
     return
   }
 
-  const horizontalDelta = moveDirection.multiplyScalar(walkSpeed * deltaTime)
+  const horizontalDelta = moveDirection.multiplyScalar(walkSpeed * playerLiquidProfile.speedMultiplier * deltaTime)
+  const isInLiquid = playerLiquidKind !== 'none'
 
-  if (keys.has('Space') && isGrounded) {
+  if (!isInLiquid && keys.has('Space') && isGrounded) {
     verticalVelocity = jumpVelocity
     isGrounded = false
   }
 
-  verticalVelocity -= gravity * deltaTime
+  if (isInLiquid) {
+    if (keys.has('Space')) {
+      verticalVelocity += playerLiquidProfile.swimUpAcceleration * deltaTime
+    }
+    if (keys.has('ShiftLeft') || keys.has('ShiftRight')) {
+      verticalVelocity -= playerLiquidProfile.swimUpAcceleration * 0.7 * deltaTime
+    }
+
+    verticalVelocity -= gravity * playerLiquidProfile.gravityScale * deltaTime
+    verticalVelocity *= Math.max(0, 1 - playerLiquidProfile.verticalDrag * deltaTime)
+    verticalVelocity = Math.max(
+      playerLiquidProfile.maxSinkSpeed,
+      Math.min(playerLiquidProfile.maxRiseSpeed, verticalVelocity),
+    )
+  } else {
+    verticalVelocity -= gravity * deltaTime
+  }
+
   moveWithCollisions(new Vector3(horizontalDelta.x, verticalVelocity * deltaTime, horizontalDelta.z))
 }
 
@@ -1047,10 +1096,12 @@ function animate(timestamp?: number) {
   timer.update(timestamp)
   const deltaTime = Math.min(timer.getDelta(), 0.05)
   updatePerf(deltaTime)
+  updatePlayerLiquidState()
 
   if (isGameLocked()) {
     updateMovement(deltaTime)
     world.ensureChunksAround(camera.position.x, camera.position.z)
+    updatePlayerLiquidState()
   }
 
   updateFluidSimulation(deltaTime)
@@ -1076,6 +1127,8 @@ function animate(timestamp?: number) {
     mode: isFlying ? 'Flying' : `Walking ${isGrounded ? 'grounded' : 'airborne'}`,
     selectedBlock: getSelectedBlock().label,
     target: formatTarget(hit),
+    playerLiquid: playerLiquidProfile.label,
+    playerLiquidSpeedMultiplier: playerLiquidProfile.speedMultiplier,
     yaw,
     pitch,
     camera,
