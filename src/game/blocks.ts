@@ -34,6 +34,7 @@ export const BlockId = {
   RedstoneEmerald: 32,
   Water: 33,
   Lava: 34,
+  Obsidian: 35,
 } as const
 
 export type BlockId = (typeof BlockId)[keyof typeof BlockId]
@@ -492,6 +493,16 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     materialKind: 'liquid',
     renderLayer: 'liquid',
     textures: { side: tile('lava') },
+  },
+  {
+    id: BlockId.Obsidian,
+    key: 'obsidian',
+    label: '黑曜石',
+    iconPath: tile('greystone'),
+    category: 'terrain',
+    solid: true,
+    materialKind: 'opaque',
+    textures: { side: tile('greystone') },
   },
 ]
 

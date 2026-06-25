@@ -726,13 +726,9 @@ export class VoxelWorld {
     const queue = this.getFluidQueue(blockId)
     let processed = 0
     let changed = 0
+    const queuedKeys = Array.from(queue).slice(0, maxUpdates)
 
-    while (processed < maxUpdates && queue.size > 0) {
-      const key = queue.values().next().value
-      if (key === undefined) {
-        break
-      }
-
+    for (const key of queuedKeys) {
       queue.delete(key)
       const position = parseFluidQueueKey(key)
       if (
@@ -1097,6 +1093,16 @@ export class VoxelWorld {
       targetBlockId === blockId ||
       isDestroyedByFluid(targetBlockId, blockId)
 
+    if (targetBlockId !== BlockId.Air && targetBlockId !== blockId && isDestroyedByFluid(targetBlockId, blockId)) {
+      if (blockId === BlockId.Lava && targetBlockId === BlockId.Ice) {
+        return this.setSimulatedBlock(worldX, worldY, worldZ, BlockId.Water)
+      }
+
+      if (blockId === BlockId.Lava && targetBlockId === BlockId.Snow) {
+        return this.setSimulatedBlock(worldX, worldY, worldZ, BlockId.Air)
+      }
+    }
+
     if (canOverwrite && (targetBlockId !== blockId || fluidLevel < targetFluidLevel)) {
       return this.setFluidBlock(worldX, worldY, worldZ, blockId, fluidLevel)
     }
@@ -1110,6 +1116,8 @@ export class VoxelWorld {
     }
 
     const oppositeBlockId = blockId === BlockId.Water ? BlockId.Lava : BlockId.Water
+    const getLavaReactionBlock = (lavaX: number, lavaY: number, lavaZ: number) =>
+      this.getFluidLevel(lavaX, lavaY, lavaZ) === FLUID_SOURCE_LEVEL ? BlockId.Obsidian : BlockId.Stone
 
     for (const [dx, dy, dz] of fluidReactionNeighbors) {
       const neighborX = worldX + dx
@@ -1121,10 +1129,10 @@ export class VoxelWorld {
       }
 
       if (blockId === BlockId.Lava) {
-        return this.setSimulatedBlock(worldX, worldY, worldZ, BlockId.Stone)
+        return this.setSimulatedBlock(worldX, worldY, worldZ, getLavaReactionBlock(worldX, worldY, worldZ))
       }
 
-      return this.setSimulatedBlock(neighborX, neighborY, neighborZ, BlockId.Stone)
+      return this.setSimulatedBlock(neighborX, neighborY, neighborZ, getLavaReactionBlock(neighborX, neighborY, neighborZ))
     }
 
     return false

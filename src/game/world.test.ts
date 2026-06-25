@@ -69,11 +69,27 @@ describe('VoxelWorld.raycastVoxel', () => {
 })
 
 describe('VoxelWorld fluid rules', () => {
-  it('turns lava into stone when water touches lava', () => {
+  it('turns source lava into obsidian when water touches lava', () => {
     const world = createWorldWithEmptyOrigin()
     world.setBlock(4, 10, 4, BlockId.Water)
     world.setBlock(5, 10, 4, BlockId.Lava)
 
+    expect(world.stepFluids()).toBeGreaterThan(0)
+
+    expect(world.getBlock(5, 10, 4)).toBe(BlockId.Obsidian)
+    expect(world.getFluidLevel(5, 10, 4)).toBe(FLUID_NONE)
+  })
+
+  it('turns flowing lava into stone when water touches lava', () => {
+    const world = createWorldWithEmptyOrigin()
+    world.setBlock(4, 9, 4, BlockId.Stone)
+    world.setBlock(4, 10, 4, BlockId.Lava)
+
+    expect(world.stepFluids()).toBeGreaterThan(0)
+    expect(world.getBlock(5, 10, 4)).toBe(BlockId.Lava)
+    expect(world.getFluidLevel(5, 10, 4)).toBe(1)
+
+    world.setBlock(6, 10, 4, BlockId.Water)
     expect(world.stepFluids()).toBeGreaterThan(0)
 
     expect(world.getBlock(5, 10, 4)).toBe(BlockId.Stone)
@@ -90,6 +106,30 @@ describe('VoxelWorld fluid rules', () => {
 
     expect(world.getBlock(5, 10, 4)).toBe(BlockId.Lava)
     expect(world.getFluidLevel(5, 10, 4)).toBe(1)
+  })
+
+  it('melts ice into water instead of immediately replacing it with lava', () => {
+    const world = createWorldWithEmptyOrigin()
+    world.setBlock(4, 9, 4, BlockId.Stone)
+    world.setBlock(4, 10, 4, BlockId.Lava)
+    world.setBlock(5, 10, 4, BlockId.Ice)
+
+    expect(world.stepFluids()).toBeGreaterThan(0)
+
+    expect(world.getBlock(5, 10, 4)).toBe(BlockId.Water)
+    expect(world.getFluidLevel(5, 10, 4)).toBe(FLUID_SOURCE_LEVEL)
+  })
+
+  it('melts snow into air before lava can occupy the space', () => {
+    const world = createWorldWithEmptyOrigin()
+    world.setBlock(4, 9, 4, BlockId.Stone)
+    world.setBlock(4, 10, 4, BlockId.Lava)
+    world.setBlock(5, 10, 4, BlockId.Snow)
+
+    expect(world.stepFluids()).toBeGreaterThan(0)
+
+    expect(world.getBlock(5, 10, 4)).toBe(BlockId.Air)
+    expect(world.getFluidLevel(5, 10, 4)).toBe(FLUID_NONE)
   })
 })
 
