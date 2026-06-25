@@ -28,7 +28,7 @@ export const GRAPHICS_PRESETS: Record<GraphicsPreset, GraphicsSettings> = {
     shadows: true,
     shadowMapSize: 2048,
     maxPixelRatio: 2,
-    bloom: false,
+    bloom: true,
   },
 }
 

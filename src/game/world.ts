@@ -11,6 +11,7 @@ import {
 import {
   BlockId,
   PLACEABLE_BLOCKS,
+  getBlockDefinition,
   getBlockShape,
   getBlockRenderLayer,
   isBlockOpaqueOccluder,
@@ -70,6 +71,15 @@ export interface FluidBlockStats {
   queued: number
   processed: number
   changed: number
+}
+
+export interface WorldEmissiveLightSource {
+  x: number
+  y: number
+  z: number
+  color: number
+  intensity: number
+  count: number
 }
 
 interface RenderBlockPosition extends BlockPosition {
@@ -246,6 +256,8 @@ const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   transparent: 2,
   liquid: 3,
 }
+
+const EMISSIVE_LIGHT_CELL_SIZE = 8
 
 export class VoxelWorld {
   private readonly chunks = new Map<string, Chunk>()
@@ -444,6 +456,110 @@ export class VoxelWorld {
     }
 
     return stats
+  }
+
+  getEmissiveLightSources(
+    focusX: number,
+    focusY: number,
+    focusZ: number,
+    radius = 48,
+    maxSources = 12,
+  ): WorldEmissiveLightSource[] {
+    const radiusSq = radius * radius
+    const groups = new Map<
+      string,
+      {
+        x: number
+        y: number
+        z: number
+        weight: number
+        intensity: number
+        count: number
+        color: number
+        maxEmit: number
+        distanceSq: number
+      }
+    >()
+
+    for (const chunk of this.chunks.values()) {
+      for (let y = 0; y < WORLD_HEIGHT; y += 1) {
+        for (let z = 0; z < CHUNK_SIZE; z += 1) {
+          for (let x = 0; x < CHUNK_SIZE; x += 1) {
+            const index = blockIndex(x, y, z)
+            const blockId = chunk.data[index] as BlockId
+            const definition = getBlockDefinition(blockId)
+            if (!definition?.emitsLight || definition.emissiveColor === undefined) {
+              continue
+            }
+
+            const worldX = chunk.cx * CHUNK_SIZE + x
+            const worldZ = chunk.cz * CHUNK_SIZE + z
+            const sourceX = worldX + 0.5
+            const sourceY = y + 0.5
+            const sourceZ = worldZ + 0.5
+            const distanceSq =
+              (sourceX - focusX) ** 2 +
+              (sourceY - focusY) ** 2 +
+              (sourceZ - focusZ) ** 2
+
+            if (distanceSq > radiusSq || !this.isBlockVisible(worldX, y, worldZ)) {
+              continue
+            }
+
+            const cellX = Math.floor(worldX / EMISSIVE_LIGHT_CELL_SIZE)
+            const cellY = Math.floor(y / EMISSIVE_LIGHT_CELL_SIZE)
+            const cellZ = Math.floor(worldZ / EMISSIVE_LIGHT_CELL_SIZE)
+            const key = `${cellX},${cellY},${cellZ}`
+            const weight = Math.max(0.2, definition.emitsLight)
+            const group = groups.get(key)
+
+            if (group) {
+              group.x += sourceX * weight
+              group.y += sourceY * weight
+              group.z += sourceZ * weight
+              group.weight += weight
+              group.intensity += definition.emitsLight
+              group.count += 1
+              group.distanceSq = Math.min(group.distanceSq, distanceSq)
+              if (definition.emitsLight > group.maxEmit) {
+                group.color = definition.emissiveColor
+                group.maxEmit = definition.emitsLight
+              }
+            } else {
+              groups.set(key, {
+                x: sourceX * weight,
+                y: sourceY * weight,
+                z: sourceZ * weight,
+                weight,
+                intensity: definition.emitsLight,
+                count: 1,
+                color: definition.emissiveColor,
+                maxEmit: definition.emitsLight,
+                distanceSq,
+              })
+            }
+          }
+        }
+      }
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        x: group.x / group.weight,
+        y: group.y / group.weight,
+        z: group.z / group.weight,
+        color: group.color,
+        intensity: Math.min(2.4, 0.55 + group.intensity * 0.18),
+        count: group.count,
+        distanceSq: group.distanceSq,
+      }))
+      .sort((a, b) => {
+        const aScore = a.distanceSq / Math.max(0.1, a.intensity)
+        const bScore = b.distanceSq / Math.max(0.1, b.intensity)
+        return aScore - bScore
+      })
+      .slice(0, maxSources)
+      .map(({ distanceSq, ...source }) => source)
   }
 
   getBlock(worldX: number, worldY: number, worldZ: number) {

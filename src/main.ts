@@ -25,9 +25,11 @@ import {
 } from './game/blocks'
 import { DebugOverlay } from './game/debugOverlay'
 import { formatDayCycleTime } from './game/dayCycle'
+import { configureEmissiveLights } from './game/emissiveLights'
 import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
 import { updateAnimatedMaterials } from './game/materials'
+import { configurePostProcessing } from './game/postProcessing'
 import { VoxelWorld, type SavedChunkPayload } from './game/world'
 
 const app = document.querySelector<HTMLDivElement>('#app')
@@ -283,6 +285,8 @@ cameraRig.add(camera)
 scene.add(cameraRig)
 
 const lighting = configureLighting(renderer, scene, graphicsSettings)
+const postProcessing = configurePostProcessing(renderer, scene, camera, graphicsSettings)
+const emissiveLights = configureEmissiveLights(scene, graphicsSettings)
 
 const world = new VoxelWorld(scene)
 world.ensureChunksAround(camera.position.x, camera.position.z)
@@ -290,9 +294,13 @@ world.ensureChunksAround(camera.position.x, camera.position.z)
 function applyGraphicsPreset(preset: GraphicsPreset) {
   graphicsPreset = preset
   graphicsSettings = GRAPHICS_PRESETS[preset]
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
+  const pixelRatio = Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio)
+  renderer.setPixelRatio(pixelRatio)
   renderer.setSize(window.innerWidth, window.innerHeight)
   lighting.applyGraphicsSettings(graphicsSettings)
+  postProcessing.applyGraphicsSettings(graphicsSettings)
+  emissiveLights.applyGraphicsSettings(graphicsSettings)
+  postProcessing.resize(window.innerWidth, window.innerHeight, pixelRatio)
 
   try {
     localStorage.setItem(GRAPHICS_PRESET_STORAGE_KEY, graphicsPreset)
@@ -1049,9 +1057,14 @@ function animate(timestamp?: number) {
   updateAnimatedMaterials(deltaTime)
   world.rebuildDirtyChunks(2)
   lighting.update(camera.position, deltaTime)
+  emissiveLights.update(world, camera.position, deltaTime, lighting.timeOfDay)
   const hit = updateSelection()
   refreshHud()
-  renderer.render(scene, camera)
+  if (postProcessing.enabled) {
+    postProcessing.render(deltaTime)
+  } else {
+    renderer.render(scene, camera)
+  }
   if (screenshotRequested) {
     screenshotRequested = false
     saveCanvasScreenshot()
@@ -1070,10 +1083,12 @@ function animate(timestamp?: number) {
     world,
     graphicsPreset,
     maxPixelRatio: graphicsSettings.maxPixelRatio,
-    bloomConfigured: graphicsSettings.bloom,
+    bloomConfigured: postProcessing.bloomEnabled,
     shadowEnabled: lighting.shadowEnabled,
     shadowMapSize: lighting.shadowMapSize,
-    postFxEnabled: lighting.postFxEnabled,
+    postFxEnabled: postProcessing.enabled,
+    emissiveLightCount: emissiveLights.activeCount,
+    emissiveLightsEnabled: emissiveLights.enabled,
     dayCycleTime: formatDayCycleTime(lighting.timeOfDay),
     dayCyclePhase: lighting.phase,
     dayCycleSeconds: lighting.cycleSeconds,
@@ -1415,8 +1430,10 @@ startButton.addEventListener('click', requestLock)
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight
   camera.updateProjectionMatrix()
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
+  const pixelRatio = Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio)
+  renderer.setPixelRatio(pixelRatio)
   renderer.setSize(window.innerWidth, window.innerHeight)
+  postProcessing.resize(window.innerWidth, window.innerHeight, pixelRatio)
 })
 
 resetPlayer()

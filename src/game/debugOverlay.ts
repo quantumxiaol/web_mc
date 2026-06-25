@@ -21,6 +21,8 @@ export interface DebugOverlayState {
   shadowEnabled: boolean
   shadowMapSize: number
   postFxEnabled: boolean
+  emissiveLightCount: number
+  emissiveLightsEnabled: boolean
   dayCycleTime: string
   dayCyclePhase: DayCyclePhase
   dayCycleSeconds: number
@@ -91,6 +93,7 @@ export class DebugOverlay {
       `Shadow: ${state.shadowEnabled ? `on ${state.shadowMapSize}` : 'off'}`,
       `Day cycle: ${state.dayCycleTime} ${state.dayCyclePhase} | ${state.dayCycleSeconds}s`,
       `Bloom setting: ${state.bloomConfigured ? 'on' : 'off'}`,
+      `Emissive lights: ${state.emissiveLightsEnabled ? `on ${state.emissiveLightCount}` : 'off'}`,
       '',
       'Renderer:',
       `Draw calls: ${info.render.calls}`,

@@ -93,6 +93,21 @@ describe('VoxelWorld fluid rules', () => {
   })
 })
 
+describe('VoxelWorld emissive light sources', () => {
+  it('aggregates visible emissive blocks near the player', () => {
+    const world = createWorldWithEmptyOrigin()
+    world.setBlock(4, 10, 4, BlockId.Lava)
+    world.setBlock(5, 10, 4, BlockId.Lava)
+
+    const sources = world.getEmissiveLightSources(4, 10, 4, 3, 4)
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0].color).toBe(0xff7a18)
+    expect(sources[0].count).toBe(2)
+    expect(sources[0].intensity).toBeGreaterThan(0.8)
+  })
+})
+
 describe('VoxelWorld edited chunk persistence', () => {
   it('exports and imports edited chunks with block and fluid state', () => {
     const source = createWorldWithEmptyOrigin()
