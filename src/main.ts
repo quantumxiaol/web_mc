@@ -24,6 +24,7 @@ import {
   type BlockDefinition,
 } from './game/blocks'
 import { DebugOverlay } from './game/debugOverlay'
+import { formatDayCycleTime } from './game/dayCycle'
 import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
 import { updateAnimatedMaterials } from './game/materials'
@@ -1047,7 +1048,7 @@ function animate(timestamp?: number) {
   updateFluidSimulation(deltaTime)
   updateAnimatedMaterials(deltaTime)
   world.rebuildDirtyChunks(2)
-  lighting.update(camera.position)
+  lighting.update(camera.position, deltaTime)
   const hit = updateSelection()
   refreshHud()
   renderer.render(scene, camera)
@@ -1073,6 +1074,9 @@ function animate(timestamp?: number) {
     shadowEnabled: lighting.shadowEnabled,
     shadowMapSize: lighting.shadowMapSize,
     postFxEnabled: lighting.postFxEnabled,
+    dayCycleTime: formatDayCycleTime(lighting.timeOfDay),
+    dayCyclePhase: lighting.phase,
+    dayCycleSeconds: lighting.cycleSeconds,
     fluidPaused,
     worldgenFluidSimEnabled: world.getWorldgenFluidSimulationEnabled(),
   })

@@ -1,4 +1,5 @@
 import type { PerspectiveCamera, WebGLRenderer } from 'three'
+import type { DayCyclePhase } from './dayCycle'
 import type { GraphicsPreset } from './graphicsSettings'
 import { CHUNK_SIZE, LOAD_RADIUS, WORLD_HEIGHT, type VoxelWorld } from './world'
 
@@ -20,6 +21,9 @@ export interface DebugOverlayState {
   shadowEnabled: boolean
   shadowMapSize: number
   postFxEnabled: boolean
+  dayCycleTime: string
+  dayCyclePhase: DayCyclePhase
+  dayCycleSeconds: number
   fluidPaused: boolean
   worldgenFluidSimEnabled: boolean
 }
@@ -85,6 +89,7 @@ export class DebugOverlay {
       `Preset: ${state.graphicsPreset}`,
       `Max pixel ratio: ${state.maxPixelRatio.toFixed(2)}`,
       `Shadow: ${state.shadowEnabled ? `on ${state.shadowMapSize}` : 'off'}`,
+      `Day cycle: ${state.dayCycleTime} ${state.dayCyclePhase} | ${state.dayCycleSeconds}s`,
       `Bloom setting: ${state.bloomConfigured ? 'on' : 'off'}`,
       '',
       'Renderer:',

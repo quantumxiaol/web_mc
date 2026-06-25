@@ -21,6 +21,7 @@
 - `F2` 保存当前画面截图
 - `F3` 或反引号显示调试层，包含 FPS、坐标、区块、draw calls、三角形数和显存对象计数
 - 基础光照包含天空光、太阳方向光、阴影和 ACES 色调映射
+- 日夜循环会驱动太阳角度、天空色、fog 颜色、环境光强度和曝光变化，F3 会显示当前时间段
 - `F4` / `P` 可在 low / medium / high 图形档位之间切换，F3 会显示当前档位、DPR 和 mesh layer 统计
 - 图形档位、快捷栏配置和手动保存的世界编辑会写入浏览器 `localStorage`
 - 世界存档只保存 edited chunks，支持浏览器保存/载入以及 JSON 导出/导入
@@ -37,6 +38,7 @@
 - 使用 `Uint8Array` 存储区块数据
 - 按玩家位置动态加载 `5 x 5` 个区块
 - 使用 `THREE.InstancedMesh` 渲染区块内的多种方块
+- `Vitest` 覆盖 DDA raycast、流体反应、edited chunk 导入/导出和日夜循环基础规则
 
 ## 本地运行
 
@@ -50,6 +52,12 @@ pnpm dev
 ```bash
 pnpm build
 pnpm preview
+```
+
+## 测试
+
+```bash
+pnpm test
 ```
 
 ## 控制说明

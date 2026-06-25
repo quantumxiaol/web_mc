@@ -35,7 +35,7 @@ const loadVoxelTexture = (path: string) => {
     return cached
   }
 
-  const texture = textureLoader.load(`${assetBase}${path}`)
+  const texture = typeof document === 'undefined' ? new Texture() : textureLoader.load(`${assetBase}${path}`)
   texture.colorSpace = SRGBColorSpace
   texture.magFilter = NearestFilter
   texture.minFilter = NearestMipmapNearestFilter
