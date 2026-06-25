@@ -27,7 +27,7 @@ import { DebugOverlay } from './game/debugOverlay'
 import { GRAPHICS_PRESETS, nextGraphicsPreset, type GraphicsPreset } from './game/graphicsSettings'
 import { configureLighting } from './game/lighting'
 import { updateAnimatedMaterials } from './game/materials'
-import { VoxelWorld } from './game/world'
+import { VoxelWorld, type SavedChunkPayload } from './game/world'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -38,11 +38,37 @@ if (!app) {
 const assetBase = import.meta.env.BASE_URL
 const GRAPHICS_PRESET_STORAGE_KEY = 'web_mc:graphicsPreset'
 const HOTBAR_STORAGE_KEY = 'web_mc:hotbar'
+const WORLD_SAVE_STORAGE_KEY = 'web_mc:worldSave'
 const HOTBAR_SIZE = Math.min(9, PLACEABLE_BLOCKS.length)
 const defaultHotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
 const placeableBlockIds = new Set<BlockId>(PLACEABLE_BLOCKS.map((block) => block.id))
 
-const isGraphicsPreset = (value: string | null): value is GraphicsPreset =>
+interface SerializedChunkPayload {
+  key: string
+  cx: number
+  cz: number
+  data: string
+  fluidLevels: string
+}
+
+interface SerializedPlayerState {
+  x: number
+  y: number
+  z: number
+  yaw: number
+  pitch: number
+}
+
+interface WorldSaveFile {
+  version: 1
+  createdAt: string
+  player: SerializedPlayerState
+  hotbar: number[]
+  graphicsPreset: GraphicsPreset
+  chunks: SerializedChunkPayload[]
+}
+
+const isGraphicsPreset = (value: unknown): value is GraphicsPreset =>
   value === 'low' || value === 'medium' || value === 'high'
 
 const getInitialGraphicsPreset = (): GraphicsPreset => {
@@ -167,9 +193,14 @@ app.innerHTML = `
         <span>F2 截图</span>
         <span>F3/\` 调试</span>
         <span>F4/P 图形档位</span>
+        <span>Cmd/Ctrl+S 保存世界</span>
+        <span>Cmd/Ctrl+O 载入世界</span>
+        <span>Cmd/Ctrl+E 导出存档</span>
+        <span>Cmd/Ctrl+I 导入存档</span>
         <span>V 暂停流体</span>
         <span>B 单步流体</span>
         <span>N 清除流动液体</span>
+        <span>Shift+N 清空编辑</span>
         <span>M 天然液体仿真</span>
         <span>G 切换飞行/步行</span>
         <span>R 重置位置</span>
@@ -227,6 +258,11 @@ const paletteGrid = getRequiredElement<HTMLDivElement>('#palette-grid')
 const hotbarButtons = Array.from(hotbar.querySelectorAll<HTMLButtonElement>('.hotbar-slot'))
 const paletteButtons = Array.from(paletteGrid.querySelectorAll<HTMLButtonElement>('.palette-block'))
 const paletteTabButtons = Array.from(paletteTabs.querySelectorAll<HTMLButtonElement>('.palette-tab'))
+const saveImportInput = document.createElement('input')
+saveImportInput.type = 'file'
+saveImportInput.accept = 'application/json,.json'
+saveImportInput.style.display = 'none'
+document.body.append(saveImportInput)
 
 const renderer = new WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, graphicsSettings.maxPixelRatio))
@@ -465,6 +501,240 @@ function downloadScreenshotUrl(url: string, filename: string) {
   document.body.append(link)
   link.click()
   link.remove()
+}
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+
+  return btoa(binary)
+}
+
+function base64ToBytes(value: string) {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return bytes
+}
+
+function serializeChunkPayload(chunk: SavedChunkPayload): SerializedChunkPayload {
+  return {
+    key: chunk.key,
+    cx: chunk.cx,
+    cz: chunk.cz,
+    data: bytesToBase64(chunk.data),
+    fluidLevels: bytesToBase64(chunk.fluidLevels),
+  }
+}
+
+function deserializeChunkPayload(chunk: SerializedChunkPayload): SavedChunkPayload {
+  return {
+    key: chunk.key,
+    cx: chunk.cx,
+    cz: chunk.cz,
+    data: base64ToBytes(chunk.data),
+    fluidLevels: base64ToBytes(chunk.fluidLevels),
+  }
+}
+
+function isSerializedPlayerState(value: unknown): value is SerializedPlayerState {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.x) &&
+    isFiniteNumber(value.y) &&
+    isFiniteNumber(value.z) &&
+    isFiniteNumber(value.yaw) &&
+    isFiniteNumber(value.pitch)
+  )
+}
+
+function isSerializedChunkPayload(value: unknown): value is SerializedChunkPayload {
+  return (
+    isRecord(value) &&
+    typeof value.key === 'string' &&
+    Number.isInteger(value.cx) &&
+    Number.isInteger(value.cz) &&
+    typeof value.data === 'string' &&
+    typeof value.fluidLevels === 'string'
+  )
+}
+
+function parseWorldSave(raw: string): WorldSaveFile | null {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+
+    if (!isRecord(parsed)) {
+      return null
+    }
+
+    const { version, createdAt, player, hotbar, graphicsPreset, chunks } = parsed
+    if (
+      version !== 1 ||
+      typeof createdAt !== 'string' ||
+      !isSerializedPlayerState(player) ||
+      !Array.isArray(hotbar) ||
+      !hotbar.every(isFiniteNumber) ||
+      !isGraphicsPreset(graphicsPreset) ||
+      !Array.isArray(chunks) ||
+      !chunks.every(isSerializedChunkPayload)
+    ) {
+      return null
+    }
+
+    return {
+      version: 1,
+      createdAt,
+      player,
+      hotbar,
+      graphicsPreset,
+      chunks,
+    }
+  } catch {
+    return null
+  }
+}
+
+function createWorldSave(): WorldSaveFile {
+  return {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    player: {
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+      yaw,
+      pitch,
+    },
+    hotbar: [...hotbarBlockIds],
+    graphicsPreset,
+    chunks: world.exportEditedChunks().map(serializeChunkPayload),
+  }
+}
+
+function restoreHotbarFromSave(savedHotbar: number[]) {
+  const restoredIds = savedHotbar
+    .map((entry) => Number(entry) as BlockId)
+    .filter((blockId) => placeableBlockIds.has(blockId))
+    .slice(0, HOTBAR_SIZE)
+  const nextHotbarBlockIds = [...restoredIds, ...defaultHotbarBlockIds].slice(0, HOTBAR_SIZE)
+
+  hotbarBlockIds.splice(0, hotbarBlockIds.length, ...nextHotbarBlockIds)
+  selectedHotbarSlot = Math.min(selectedHotbarSlot, hotbarBlockIds.length - 1)
+  saveHotbarBlockIds()
+  updateHotbarSelection()
+}
+
+function applyWorldSave(save: WorldSaveFile) {
+  const importedCount = world.importEditedChunks(save.chunks.map(deserializeChunkPayload))
+  if (importedCount === null) {
+    throw new Error('Invalid saved chunk data')
+  }
+
+  restoreHotbarFromSave(save.hotbar)
+  applyGraphicsPreset(save.graphicsPreset)
+
+  camera.position.set(save.player.x, save.player.y, save.player.z)
+  yaw = save.player.yaw
+  pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, save.player.pitch))
+  verticalVelocity = 0
+  isGrounded = false
+  selection.visible = false
+  clearActiveInput()
+  updateCameraRotation()
+  world.ensureChunksAround(camera.position.x, camera.position.z)
+
+  return importedCount
+}
+
+function saveWorldToLocalStorage() {
+  const save = createWorldSave()
+
+  try {
+    localStorage.setItem(WORLD_SAVE_STORAGE_KEY, JSON.stringify(save))
+    showScreenshotToast(`世界已保存：${save.chunks.length} 个 edited chunk`)
+  } catch {
+    showScreenshotToast('世界保存失败：浏览器存储空间不足')
+  }
+}
+
+function loadWorldFromLocalStorage() {
+  let raw: string | null = null
+
+  try {
+    raw = localStorage.getItem(WORLD_SAVE_STORAGE_KEY)
+  } catch {
+    showScreenshotToast('读取浏览器存档失败')
+    return false
+  }
+
+  if (!raw) {
+    showScreenshotToast('没有可载入的浏览器存档')
+    return false
+  }
+
+  const save = parseWorldSave(raw)
+  if (!save) {
+    showScreenshotToast('浏览器存档格式无效')
+    return false
+  }
+
+  try {
+    const importedCount = applyWorldSave(save)
+    showScreenshotToast(`世界已载入：${importedCount} 个 edited chunk`)
+    return true
+  } catch {
+    showScreenshotToast('世界载入失败')
+    return false
+  }
+}
+
+function exportWorldSave() {
+  const save = createWorldSave()
+  const filename = `web_mc-save-${formatScreenshotTimestamp()}.json`
+  const blob = new Blob([JSON.stringify(save)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+
+  downloadScreenshotUrl(url, filename)
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  showScreenshotToast(`已导出存档：${filename}`)
+}
+
+function requestWorldImport() {
+  clearActiveInput()
+  if (isGameLocked()) {
+    document.exitPointerLock()
+  }
+
+  saveImportInput.value = ''
+  saveImportInput.click()
+}
+
+function clearWorldEdits() {
+  world.clearEditedChunks()
+  world.ensureChunksAround(camera.position.x, camera.position.z)
+
+  try {
+    localStorage.removeItem(WORLD_SAVE_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures; the in-memory world has already been cleared.
+  }
+
+  showScreenshotToast('已清空编辑并回到 seed world')
 }
 
 function saveCanvasScreenshot() {
@@ -832,6 +1102,35 @@ document.addEventListener('pointerlockerror', clearActiveInput)
 window.addEventListener('keydown', (event) => {
   const editableTarget = isEditableTarget(event.target)
 
+  if (!editableTarget && (event.metaKey || event.ctrlKey) && !event.repeat) {
+    if (event.code === 'KeyS') {
+      saveWorldToLocalStorage()
+      clearActiveInput()
+      event.preventDefault()
+      return
+    }
+
+    if (event.code === 'KeyO') {
+      loadWorldFromLocalStorage()
+      clearActiveInput()
+      event.preventDefault()
+      return
+    }
+
+    if (event.code === 'KeyE') {
+      exportWorldSave()
+      clearActiveInput()
+      event.preventDefault()
+      return
+    }
+
+    if (event.code === 'KeyI') {
+      requestWorldImport()
+      event.preventDefault()
+      return
+    }
+  }
+
   if (!editableTarget && isSystemShortcutEvent(event)) {
     clearActiveInput()
     return
@@ -882,6 +1181,13 @@ window.addEventListener('keydown', (event) => {
   if (!editableTarget && event.code === 'KeyB' && !event.repeat) {
     fluidStepRequested = true
     showScreenshotToast('单步执行流体 tick')
+    event.preventDefault()
+    return
+  }
+
+  if (!editableTarget && event.code === 'KeyN' && event.shiftKey && !event.repeat) {
+    clearWorldEdits()
+    clearActiveInput()
     event.preventDefault()
     return
   }
@@ -1032,6 +1338,35 @@ paletteGrid.addEventListener('click', (event) => {
 
 paletteClose.addEventListener('click', () => {
   setPaletteOpen(false)
+})
+
+saveImportInput.addEventListener('change', async () => {
+  const file = saveImportInput.files?.[0]
+  saveImportInput.value = ''
+
+  if (!file) {
+    return
+  }
+
+  try {
+    const raw = await file.text()
+    const save = parseWorldSave(raw)
+
+    if (!save) {
+      showScreenshotToast('导入失败：存档格式无效')
+      return
+    }
+
+    const importedCount = applyWorldSave(save)
+    try {
+      localStorage.setItem(WORLD_SAVE_STORAGE_KEY, JSON.stringify(save))
+      showScreenshotToast(`已导入并保存：${importedCount} 个 edited chunk`)
+    } catch {
+      showScreenshotToast(`已导入：${importedCount} 个 edited chunk，本地保存失败`)
+    }
+  } catch {
+    showScreenshotToast('导入失败：无法读取文件')
+  }
 })
 
 renderer.domElement.addEventListener('mousedown', (event) => {

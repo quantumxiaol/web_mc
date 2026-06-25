@@ -81,6 +81,14 @@ interface SavedChunkData {
   fluidLevels: Uint8Array
 }
 
+export interface SavedChunkPayload {
+  key: string
+  cx: number
+  cz: number
+  data: Uint8Array
+  fluidLevels: Uint8Array
+}
+
 interface Chunk {
   cx: number
   cz: number
@@ -140,12 +148,49 @@ const instanceMatrix = new Matrix4()
 
 const chunkKey = (cx: number, cz: number) => `${cx},${cz}`
 
+const parseChunkKey = (key: string) => {
+  const [cx, cz] = key.split(',').map(Number)
+
+  if (!Number.isInteger(cx) || !Number.isInteger(cz)) {
+    return null
+  }
+
+  return { cx, cz }
+}
+
 const floorDiv = (value: number, size: number) => Math.floor(value / size)
 
 const mod = (value: number, size: number) => ((value % size) + size) % size
 
 const blockIndex = (x: number, y: number, z: number) =>
   y * CHUNK_SIZE * CHUNK_SIZE + z * CHUNK_SIZE + x
+
+const CHUNK_DATA_LENGTH = CHUNK_SIZE * WORLD_HEIGHT * CHUNK_SIZE
+
+const isValidSavedChunkData = (data: Uint8Array, fluidLevels: Uint8Array) => {
+  if (data.length !== CHUNK_DATA_LENGTH || fluidLevels.length !== CHUNK_DATA_LENGTH) {
+    return false
+  }
+
+  for (let index = 0; index < data.length; index += 1) {
+    const blockId = data[index] as BlockId
+    const fluidLevel = fluidLevels[index] ?? FLUID_NONE
+
+    if (blockId !== BlockId.Air && !blockMaterialMap.has(blockId)) {
+      return false
+    }
+
+    if (isBlockLiquid(blockId)) {
+      if (fluidLevel === FLUID_NONE || fluidLevel > getFluidRule(blockId).maxLevel) {
+        return false
+      }
+    } else if (fluidLevel !== FLUID_NONE) {
+      return false
+    }
+  }
+
+  return true
+}
 
 const countLoadedBlocks = (data: Uint8Array) => {
   let count = 0
@@ -278,6 +323,74 @@ export class VoxelWorld {
         this.seedFluidUpdates(chunk)
       }
     }
+  }
+
+  exportEditedChunks(): SavedChunkPayload[] {
+    for (const key of this.editedChunkKeys) {
+      const chunk = this.chunks.get(key)
+      if (chunk) {
+        this.persistEditedChunk(key, chunk)
+      }
+    }
+
+    const payloads: SavedChunkPayload[] = []
+    for (const key of this.editedChunkKeys) {
+      const savedChunk = this.editedChunkData.get(key)
+      const position = parseChunkKey(key)
+      if (!savedChunk || !position) {
+        continue
+      }
+
+      payloads.push({
+        key,
+        cx: position.cx,
+        cz: position.cz,
+        data: savedChunk.data.slice(),
+        fluidLevels: savedChunk.fluidLevels.slice(),
+      })
+    }
+
+    return payloads
+  }
+
+  importEditedChunks(payloads: SavedChunkPayload[]) {
+    const nextEditedChunkKeys = new Set<string>()
+    const nextEditedChunkData = new Map<string, SavedChunkData>()
+
+    for (const payload of payloads) {
+      const key = chunkKey(payload.cx, payload.cz)
+      if (
+        payload.key !== key ||
+        !isValidSavedChunkData(payload.data, payload.fluidLevels)
+      ) {
+        return null
+      }
+
+      nextEditedChunkKeys.add(key)
+      nextEditedChunkData.set(key, {
+        data: payload.data.slice(),
+        fluidLevels: payload.fluidLevels.slice(),
+      })
+    }
+
+    this.clearLoadedChunks()
+    this.editedChunkKeys.clear()
+    this.editedChunkData.clear()
+
+    for (const key of nextEditedChunkKeys) {
+      this.editedChunkKeys.add(key)
+    }
+    for (const [key, savedChunk] of nextEditedChunkData) {
+      this.editedChunkData.set(key, savedChunk)
+    }
+
+    return this.editedChunkKeys.size
+  }
+
+  clearEditedChunks() {
+    this.clearLoadedChunks()
+    this.editedChunkKeys.clear()
+    this.editedChunkData.clear()
   }
 
   getFluidStats(): WorldFluidStats {
@@ -1063,6 +1176,25 @@ export class VoxelWorld {
     }
   }
 
+  private persistEditedChunk(key: string, chunk: Chunk) {
+    this.editedChunkData.set(key, {
+      data: chunk.data.slice(),
+      fluidLevels: chunk.fluidLevels.slice(),
+    })
+  }
+
+  private clearLoadedChunks() {
+    for (const chunk of this.chunks.values()) {
+      this.removeChunkMeshes(chunk)
+    }
+
+    this.chunks.clear()
+    this.dirtyChunks.clear()
+    this.clearFluidQueues()
+    this.loadedBlockCount = 0
+    this.renderedBlockCount = 0
+  }
+
   private loadChunk(cx: number, cz: number) {
     const key = chunkKey(cx, cz)
     const cached = this.chunks.get(key)
@@ -1092,7 +1224,7 @@ export class VoxelWorld {
     this.chunks.set(key, chunk)
     this.loadedBlockCount += chunk.loadedBlockCount
     this.rebuildChunkMesh(chunk)
-    if (ENABLE_WORLDGEN_FLUID_SIM) {
+    if (this.worldgenFluidSimulationEnabled) {
       this.seedFluidUpdates(chunk)
       this.seedLoadedNeighborFluidUpdates(cx, cz)
     }
@@ -1104,10 +1236,7 @@ export class VoxelWorld {
     const { cx, cz } = chunk
 
     if (this.editedChunkKeys.has(key)) {
-      this.editedChunkData.set(key, {
-        data: chunk.data.slice(),
-        fluidLevels: chunk.fluidLevels.slice(),
-      })
+      this.persistEditedChunk(key, chunk)
     }
 
     this.removeQueuedFluidUpdatesForChunk(cx, cz)
