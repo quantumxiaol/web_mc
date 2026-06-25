@@ -14,6 +14,7 @@ import {
   getBlockShape,
   getBlockRenderLayer,
   isBlockOpaqueOccluder,
+  isDestroyedByFluid,
   isBlockLiquid,
   isBlockRaycastTarget,
   isBlockSolid,
@@ -56,6 +57,15 @@ export interface WorldMeshStats {
 }
 
 export interface WorldFluidStats {
+  active: number
+  queued: number
+  processed: number
+  changed: number
+  water: FluidBlockStats
+  lava: FluidBlockStats
+}
+
+export interface FluidBlockStats {
   active: number
   queued: number
   processed: number
@@ -175,6 +185,14 @@ const parseFluidQueueKey = (key: string): BlockPosition | null => {
 }
 
 const ENABLE_WORLDGEN_FLUID_SIM = false
+const fluidReactionNeighbors = [
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 1, 0],
+  [0, -1, 0],
+  [0, 0, 1],
+  [0, 0, -1],
+] as const
 
 const renderOrderByLayer: Record<BlockRenderLayer, number> = {
   opaque: 0,
@@ -191,11 +209,12 @@ export class VoxelWorld {
   private readonly editedChunkData = new Map<string, SavedChunkData>()
   private readonly fluidUpdateQueues = new Map<BlockId, Set<string>>()
   private readonly fluidTickAccumulators = new Map<BlockId, number>()
+  private readonly lastFluidProcessedByBlock = new Map<BlockId, number>()
+  private readonly lastFluidChangedByBlock = new Map<BlockId, number>()
   private readonly scene: Scene
   private loadedBlockCount = 0
   private renderedBlockCount = 0
-  private lastFluidUpdatesProcessed = 0
-  private lastFluidCellsChanged = 0
+  private worldgenFluidSimulationEnabled = ENABLE_WORLDGEN_FLUID_SIM
 
   constructor(scene: Scene) {
     this.scene = scene
@@ -243,27 +262,50 @@ export class VoxelWorld {
     return this.editedChunkData.size
   }
 
+  getWorldgenFluidSimulationEnabled() {
+    return this.worldgenFluidSimulationEnabled
+  }
+
+  setWorldgenFluidSimulationEnabled(enabled: boolean) {
+    if (this.worldgenFluidSimulationEnabled === enabled) {
+      return
+    }
+
+    this.worldgenFluidSimulationEnabled = enabled
+
+    if (enabled) {
+      for (const chunk of this.chunks.values()) {
+        this.seedFluidUpdates(chunk)
+      }
+    }
+  }
+
   getFluidStats(): WorldFluidStats {
-    let active = 0
-    let queued = 0
+    const water = this.createFluidBlockStats(BlockId.Water)
+    const lava = this.createFluidBlockStats(BlockId.Lava)
 
     for (const chunk of this.chunks.values()) {
       for (let index = 0; index < chunk.fluidLevels.length; index += 1) {
-        if (chunk.fluidLevels[index] !== FLUID_NONE && isBlockLiquid(chunk.data[index] as BlockId)) {
-          active += 1
+        if (chunk.fluidLevels[index] === FLUID_NONE) {
+          continue
+        }
+
+        const blockId = chunk.data[index] as BlockId
+        if (blockId === BlockId.Water) {
+          water.active += 1
+        } else if (blockId === BlockId.Lava) {
+          lava.active += 1
         }
       }
     }
 
-    for (const queue of this.fluidUpdateQueues.values()) {
-      queued += queue.size
-    }
-
     return {
-      active,
-      queued,
-      processed: this.lastFluidUpdatesProcessed,
-      changed: this.lastFluidCellsChanged,
+      active: water.active + lava.active,
+      queued: water.queued + lava.queued,
+      processed: water.processed + lava.processed,
+      changed: water.changed + lava.changed,
+      water,
+      lava,
     }
   }
 
@@ -385,6 +427,7 @@ export class VoxelWorld {
     let totalChanged = 0
 
     for (const blockId of FLUID_BLOCK_IDS) {
+      this.setLastFluidStepStats(blockId, 0, 0)
       const rule = getFluidRule(blockId)
       const accumulated = (this.fluidTickAccumulators.get(blockId) ?? 0) + deltaTime
       if (accumulated < rule.tickSeconds) {
@@ -394,13 +437,60 @@ export class VoxelWorld {
 
       this.fluidTickAccumulators.set(blockId, accumulated % rule.tickSeconds)
       const stats = this.processFluidQueue(blockId, rule.maxUpdatesPerTick)
+      this.setLastFluidStepStats(blockId, stats.processed, stats.changed)
       totalProcessed += stats.processed
       totalChanged += stats.changed
     }
 
-    this.lastFluidUpdatesProcessed = totalProcessed
-    this.lastFluidCellsChanged = totalChanged
     return totalChanged
+  }
+
+  stepFluids() {
+    let totalChanged = 0
+
+    for (const blockId of FLUID_BLOCK_IDS) {
+      const rule = getFluidRule(blockId)
+      const stats = this.processFluidQueue(blockId, rule.maxUpdatesPerTick)
+      this.setLastFluidStepStats(blockId, stats.processed, stats.changed)
+      totalChanged += stats.changed
+    }
+
+    return totalChanged
+  }
+
+  clearFlowingFluids() {
+    const positions: BlockPosition[] = []
+
+    for (const chunk of this.chunks.values()) {
+      for (let y = 0; y < WORLD_HEIGHT; y += 1) {
+        for (let z = 0; z < CHUNK_SIZE; z += 1) {
+          for (let x = 0; x < CHUNK_SIZE; x += 1) {
+            const index = blockIndex(x, y, z)
+            if (
+              isBlockLiquid(chunk.data[index] as BlockId) &&
+              chunk.fluidLevels[index] !== FLUID_NONE &&
+              chunk.fluidLevels[index] !== FLUID_SOURCE_LEVEL
+            ) {
+              positions.push({
+                x: chunk.cx * CHUNK_SIZE + x,
+                y,
+                z: chunk.cz * CHUNK_SIZE + z,
+              })
+            }
+          }
+        }
+      }
+    }
+
+    for (const position of positions) {
+      this.setSimulatedBlock(position.x, position.y, position.z, BlockId.Air, {
+        markEdited: false,
+        queueFluid: false,
+      })
+    }
+
+    this.clearFluidQueues()
+    return positions.length
   }
 
   private processFluidQueue(blockId: BlockId, maxUpdates: number) {
@@ -569,6 +659,20 @@ export class VoxelWorld {
     }
   }
 
+  private createFluidBlockStats(blockId: BlockId): FluidBlockStats {
+    return {
+      active: 0,
+      queued: this.fluidUpdateQueues.get(blockId)?.size ?? 0,
+      processed: this.lastFluidProcessedByBlock.get(blockId) ?? 0,
+      changed: this.lastFluidChangedByBlock.get(blockId) ?? 0,
+    }
+  }
+
+  private setLastFluidStepStats(blockId: BlockId, processed: number, changed: number) {
+    this.lastFluidProcessedByBlock.set(blockId, processed)
+    this.lastFluidChangedByBlock.set(blockId, changed)
+  }
+
   private getLoadedChunkAt(worldX: number, worldZ: number) {
     const cx = floorDiv(worldX, CHUNK_SIZE)
     const cz = floorDiv(worldZ, CHUNK_SIZE)
@@ -595,6 +699,12 @@ export class VoxelWorld {
     }
 
     return queue
+  }
+
+  private clearFluidQueues() {
+    for (const queue of this.fluidUpdateQueues.values()) {
+      queue.clear()
+    }
   }
 
   private queueFluidUpdate(worldX: number, worldY: number, worldZ: number) {
@@ -629,6 +739,51 @@ export class VoxelWorld {
     for (const [dx, dy, dz] of neighbors) {
       this.queueFluidUpdate(worldX + dx, worldY + dy, worldZ + dz)
     }
+  }
+
+  private setSimulatedBlock(
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+    blockId: BlockId,
+    options: MarkChangedBlockOptions = { markEdited: false, queueFluid: true },
+  ) {
+    if (worldY < 0 || worldY >= WORLD_HEIGHT) {
+      return false
+    }
+    if (blockId !== BlockId.Air && !blockMaterialMap.has(blockId)) {
+      return false
+    }
+
+    const loaded = this.getLoadedChunkAt(worldX, worldZ)
+    if (!loaded) {
+      return false
+    }
+
+    const { chunk, cx, cz, lx, lz } = loaded
+    const index = blockIndex(lx, worldY, lz)
+    const previousBlockId = chunk.data[index] as BlockId
+
+    if (previousBlockId === blockId) {
+      return false
+    }
+
+    chunk.data[index] = blockId
+    chunk.fluidLevels[index] = isBlockLiquid(blockId) ? FLUID_SOURCE_LEVEL : FLUID_NONE
+    if (previousBlockId === BlockId.Air && blockId !== BlockId.Air) {
+      chunk.loadedBlockCount += 1
+      this.loadedBlockCount += 1
+    } else if (previousBlockId !== BlockId.Air && blockId === BlockId.Air) {
+      chunk.loadedBlockCount -= 1
+      this.loadedBlockCount -= 1
+    }
+
+    this.markChangedBlock(cx, cz, lx, lz, worldX, worldY, worldZ, {
+      markEdited: false,
+      queueFluid: true,
+      ...options,
+    })
+    return true
   }
 
   private setFluidBlock(worldX: number, worldY: number, worldZ: number, blockId: BlockId, fluidLevel: number) {
@@ -688,7 +843,11 @@ export class VoxelWorld {
       return true
     }
 
-    return targetBlockId === blockId && loaded.chunk.fluidLevels[targetIndex] !== FLUID_SOURCE_LEVEL
+    if (targetBlockId === blockId && loaded.chunk.fluidLevels[targetIndex] !== FLUID_SOURCE_LEVEL) {
+      return true
+    }
+
+    return isDestroyedByFluid(targetBlockId, blockId)
   }
 
   private tryFlowInto(blockId: BlockId, worldX: number, worldY: number, worldZ: number, fluidLevel: number) {
@@ -704,9 +863,39 @@ export class VoxelWorld {
     const targetIndex = blockIndex(loaded.lx, worldY, loaded.lz)
     const targetBlockId = loaded.chunk.data[targetIndex] as BlockId
     const targetFluidLevel = loaded.chunk.fluidLevels[targetIndex] ?? FLUID_NONE
+    const canOverwrite =
+      targetBlockId === BlockId.Air ||
+      targetBlockId === blockId ||
+      isDestroyedByFluid(targetBlockId, blockId)
 
-    if (targetBlockId === BlockId.Air || fluidLevel < targetFluidLevel) {
+    if (canOverwrite && (targetBlockId !== blockId || fluidLevel < targetFluidLevel)) {
       return this.setFluidBlock(worldX, worldY, worldZ, blockId, fluidLevel)
+    }
+
+    return false
+  }
+
+  private tryFluidReaction(blockId: BlockId, worldX: number, worldY: number, worldZ: number) {
+    if (blockId !== BlockId.Water && blockId !== BlockId.Lava) {
+      return false
+    }
+
+    const oppositeBlockId = blockId === BlockId.Water ? BlockId.Lava : BlockId.Water
+
+    for (const [dx, dy, dz] of fluidReactionNeighbors) {
+      const neighborX = worldX + dx
+      const neighborY = worldY + dy
+      const neighborZ = worldZ + dz
+
+      if (this.getBlock(neighborX, neighborY, neighborZ) !== oppositeBlockId) {
+        continue
+      }
+
+      if (blockId === BlockId.Lava) {
+        return this.setSimulatedBlock(worldX, worldY, worldZ, BlockId.Stone)
+      }
+
+      return this.setSimulatedBlock(neighborX, neighborY, neighborZ, BlockId.Stone)
     }
 
     return false
@@ -762,6 +951,10 @@ export class VoxelWorld {
 
     if (currentLevel === FLUID_NONE) {
       return this.setFluidBlock(worldX, worldY, worldZ, blockId, FLUID_SOURCE_LEVEL)
+    }
+
+    if (this.tryFluidReaction(blockId, worldX, worldY, worldZ)) {
+      return true
     }
 
     if (currentLevel !== FLUID_SOURCE_LEVEL) {

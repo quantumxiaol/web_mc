@@ -20,6 +20,8 @@ export interface DebugOverlayState {
   shadowEnabled: boolean
   shadowMapSize: number
   postFxEnabled: boolean
+  fluidPaused: boolean
+  worldgenFluidSimEnabled: boolean
 }
 
 const toDegrees = (radians: number) => radians * (180 / Math.PI)
@@ -70,7 +72,10 @@ export class DebugOverlay {
       `Loaded blocks: ${state.world.getLoadedBlockCount()}`,
       `Rendered blocks: ${state.world.getRenderedBlockCount()}`,
       `Edited chunks: ${state.world.getEditedChunkCount()} | saved ${state.world.getSavedEditedChunkCount()}`,
+      `Fluid paused: ${state.fluidPaused ? 'yes' : 'no'} | worldgen sim ${state.worldgenFluidSimEnabled ? 'on' : 'off'}`,
       `Fluids: active ${fluidStats.active} | queued ${fluidStats.queued} | processed ${fluidStats.processed} | changed ${fluidStats.changed}`,
+      `Water: active ${fluidStats.water.active} | queued ${fluidStats.water.queued} | processed ${fluidStats.water.processed} | changed ${fluidStats.water.changed}`,
+      `Lava: active ${fluidStats.lava.active} | queued ${fluidStats.lava.queued} | processed ${fluidStats.lava.processed} | changed ${fluidStats.lava.changed}`,
       `Chunk size: ${CHUNK_SIZE}`,
       `World height: ${WORLD_HEIGHT}`,
       `Load radius: ${LOAD_RADIUS}`,

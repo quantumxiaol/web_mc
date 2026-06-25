@@ -68,6 +68,10 @@ export interface BlockDefinition {
   emitsLight?: number
   emissiveColor?: number
   opacity?: number
+  flammable?: boolean
+  destroyedByLiquid?: boolean
+  destroyedByLava?: boolean
+  meltsByLava?: boolean
   materialKind: BlockMaterialKind
   renderLayer?: BlockRenderLayer
   shape?: BlockShape
@@ -162,6 +166,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     iconPath: tile('snow'),
     category: 'terrain',
     solid: true,
+    destroyedByLava: true,
+    meltsByLava: true,
     materialKind: 'opaque',
     textures: { side: tile('snow') },
   },
@@ -174,6 +180,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: true,
     transparent: true,
     opacity: 0.72,
+    destroyedByLava: true,
+    meltsByLava: true,
     materialKind: 'transparent',
     renderLayer: 'transparent',
     textures: { side: tile('ice') },
@@ -317,6 +325,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     category: 'nature',
     solid: true,
     transparent: true,
+    flammable: true,
+    destroyedByLava: true,
     materialKind: 'alphaTest',
     renderLayer: 'cutout',
     textures: { side: tile('leaves_transparent') },
@@ -329,6 +339,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     category: 'nature',
     solid: true,
     transparent: true,
+    flammable: true,
+    destroyedByLava: true,
     materialKind: 'alphaTest',
     renderLayer: 'cutout',
     textures: { side: tile('leaves_orange_transparent') },
@@ -340,6 +352,7 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     iconPath: tile('cactus_side'),
     category: 'nature',
     solid: true,
+    destroyedByLava: true,
     materialKind: 'opaque',
     textures: {
       side: tile('cactus_side'),
@@ -356,6 +369,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: false,
     transparent: true,
     replaceable: true,
+    destroyedByLiquid: true,
+    destroyedByLava: true,
     materialKind: 'alphaTest',
     renderLayer: 'cutout',
     shape: 'cross',
@@ -370,6 +385,8 @@ export const PLACEABLE_BLOCKS: BlockDefinition[] = [
     solid: false,
     transparent: true,
     replaceable: true,
+    destroyedByLiquid: true,
+    destroyedByLava: true,
     materialKind: 'alphaTest',
     renderLayer: 'cutout',
     shape: 'cross',
@@ -509,6 +526,24 @@ export const getBlockLabel = (blockId: BlockId) => {
 export const isBlockSolid = (blockId: BlockId) => getBlockDefinition(blockId)?.solid ?? false
 
 export const isBlockLiquid = (blockId: BlockId) => getBlockDefinition(blockId)?.liquid ?? false
+
+export const isDestroyedByFluid = (targetBlockId: BlockId, fluidBlockId: BlockId) => {
+  const block = getBlockDefinition(targetBlockId)
+
+  if (!block) {
+    return false
+  }
+
+  if (fluidBlockId === BlockId.Lava) {
+    return block.destroyedByLava === true || block.flammable === true || block.meltsByLava === true
+  }
+
+  if (fluidBlockId === BlockId.Water) {
+    return block.destroyedByLiquid === true
+  }
+
+  return false
+}
 
 export const isBlockTransparent = (blockId: BlockId) =>
   getBlockDefinition(blockId)?.transparent ?? false

@@ -167,6 +167,10 @@ app.innerHTML = `
         <span>F2 截图</span>
         <span>F3/\` 调试</span>
         <span>F4/P 图形档位</span>
+        <span>V 暂停流体</span>
+        <span>B 单步流体</span>
+        <span>N 清除流动液体</span>
+        <span>M 天然液体仿真</span>
         <span>G 切换飞行/步行</span>
         <span>R 重置位置</span>
         <span>Esc 解锁鼠标</span>
@@ -300,6 +304,8 @@ let fpsTime = 0
 let lastWheelSlotChange = 0
 let screenshotRequested = false
 let screenshotToastTimeout: number | undefined
+let fluidPaused = false
+let fluidStepRequested = false
 
 const playerRadius = 0.35
 const playerHeight = 1.8
@@ -640,6 +646,18 @@ function updatePerf(deltaTime: number) {
   }
 }
 
+function updateFluidSimulation(deltaTime: number) {
+  if (fluidStepRequested) {
+    fluidStepRequested = false
+    world.stepFluids()
+    return
+  }
+
+  if (!fluidPaused) {
+    world.updateFluids(deltaTime)
+  }
+}
+
 function updateSelection() {
   if (isPaletteOpen || !isGameLocked()) {
     selection.visible = false
@@ -756,7 +774,7 @@ function animate(timestamp?: number) {
     world.ensureChunksAround(camera.position.x, camera.position.z)
   }
 
-  world.updateFluids(deltaTime)
+  updateFluidSimulation(deltaTime)
   updateAnimatedMaterials(deltaTime)
   world.rebuildDirtyChunks(2)
   lighting.update(camera.position)
@@ -785,6 +803,8 @@ function animate(timestamp?: number) {
     shadowEnabled: lighting.shadowEnabled,
     shadowMapSize: lighting.shadowMapSize,
     postFxEnabled: lighting.postFxEnabled,
+    fluidPaused,
+    worldgenFluidSimEnabled: world.getWorldgenFluidSimulationEnabled(),
   })
   requestAnimationFrame(animate)
 }
@@ -848,6 +868,35 @@ window.addEventListener('keydown', (event) => {
     !event.repeat
   ) {
     applyGraphicsPreset(nextGraphicsPreset(graphicsPreset))
+    event.preventDefault()
+    return
+  }
+
+  if (!editableTarget && event.code === 'KeyV' && !event.repeat) {
+    fluidPaused = !fluidPaused
+    showScreenshotToast(fluidPaused ? '流体模拟已暂停' : '流体模拟已恢复')
+    event.preventDefault()
+    return
+  }
+
+  if (!editableTarget && event.code === 'KeyB' && !event.repeat) {
+    fluidStepRequested = true
+    showScreenshotToast('单步执行流体 tick')
+    event.preventDefault()
+    return
+  }
+
+  if (!editableTarget && event.code === 'KeyN' && !event.repeat) {
+    const clearedCount = world.clearFlowingFluids()
+    showScreenshotToast(`已清除流动液体：${clearedCount}`)
+    event.preventDefault()
+    return
+  }
+
+  if (!editableTarget && event.code === 'KeyM' && !event.repeat) {
+    const nextEnabled = !world.getWorldgenFluidSimulationEnabled()
+    world.setWorldgenFluidSimulationEnabled(nextEnabled)
+    showScreenshotToast(`天然液体仿真：${nextEnabled ? '开' : '关'}`)
     event.preventDefault()
     return
   }
