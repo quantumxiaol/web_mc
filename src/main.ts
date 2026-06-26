@@ -37,6 +37,14 @@ import {
 } from './game/playerLiquid'
 import { configurePostProcessing } from './game/postProcessing'
 import { VoxelWorld, type SavedChunkPayload } from './game/world'
+import {
+  WORLD_SAVE_SEED,
+  WORLD_SAVE_VERSION,
+  isGraphicsPreset,
+  parseWorldSave,
+  type SerializedChunkPayload,
+  type WorldSaveFile,
+} from './game/worldSave'
 
 const app = document.querySelector<HTMLDivElement>('#app')
 
@@ -51,34 +59,6 @@ const WORLD_SAVE_STORAGE_KEY = 'web_mc:worldSave'
 const HOTBAR_SIZE = Math.min(9, PLACEABLE_BLOCKS.length)
 const defaultHotbarBlockIds: BlockId[] = PLACEABLE_BLOCKS.slice(0, HOTBAR_SIZE).map((block) => block.id)
 const placeableBlockIds = new Set<BlockId>(PLACEABLE_BLOCKS.map((block) => block.id))
-
-interface SerializedChunkPayload {
-  key: string
-  cx: number
-  cz: number
-  data: string
-  fluidLevels: string
-}
-
-interface SerializedPlayerState {
-  x: number
-  y: number
-  z: number
-  yaw: number
-  pitch: number
-}
-
-interface WorldSaveFile {
-  version: 1
-  createdAt: string
-  player: SerializedPlayerState
-  hotbar: number[]
-  graphicsPreset: GraphicsPreset
-  chunks: SerializedChunkPayload[]
-}
-
-const isGraphicsPreset = (value: unknown): value is GraphicsPreset =>
-  value === 'low' || value === 'medium' || value === 'high'
 
 const getInitialGraphicsPreset = (): GraphicsPreset => {
   try {
@@ -540,12 +520,6 @@ function downloadScreenshotUrl(url: string, filename: string) {
   link.remove()
 }
 
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value)
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
-
 function bytesToBase64(bytes: Uint8Array) {
   let binary = ''
   const chunkSize = 0x8000
@@ -589,67 +563,12 @@ function deserializeChunkPayload(chunk: SerializedChunkPayload): SavedChunkPaylo
   }
 }
 
-function isSerializedPlayerState(value: unknown): value is SerializedPlayerState {
-  return (
-    isRecord(value) &&
-    isFiniteNumber(value.x) &&
-    isFiniteNumber(value.y) &&
-    isFiniteNumber(value.z) &&
-    isFiniteNumber(value.yaw) &&
-    isFiniteNumber(value.pitch)
-  )
-}
-
-function isSerializedChunkPayload(value: unknown): value is SerializedChunkPayload {
-  return (
-    isRecord(value) &&
-    typeof value.key === 'string' &&
-    Number.isInteger(value.cx) &&
-    Number.isInteger(value.cz) &&
-    typeof value.data === 'string' &&
-    typeof value.fluidLevels === 'string'
-  )
-}
-
-function parseWorldSave(raw: string): WorldSaveFile | null {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-
-    if (!isRecord(parsed)) {
-      return null
-    }
-
-    const { version, createdAt, player, hotbar, graphicsPreset, chunks } = parsed
-    if (
-      version !== 1 ||
-      typeof createdAt !== 'string' ||
-      !isSerializedPlayerState(player) ||
-      !Array.isArray(hotbar) ||
-      !hotbar.every(isFiniteNumber) ||
-      !isGraphicsPreset(graphicsPreset) ||
-      !Array.isArray(chunks) ||
-      !chunks.every(isSerializedChunkPayload)
-    ) {
-      return null
-    }
-
-    return {
-      version: 1,
-      createdAt,
-      player,
-      hotbar,
-      graphicsPreset,
-      chunks,
-    }
-  } catch {
-    return null
-  }
-}
-
 function createWorldSave(): WorldSaveFile {
   return {
-    version: 1,
+    version: WORLD_SAVE_VERSION,
     createdAt: new Date().toISOString(),
+    seed: WORLD_SAVE_SEED,
+    timeOfDay: lighting.timeOfDay,
     player: {
       x: camera.position.x,
       y: camera.position.y,
@@ -659,6 +578,10 @@ function createWorldSave(): WorldSaveFile {
     },
     hotbar: [...hotbarBlockIds],
     graphicsPreset,
+    fluid: {
+      paused: fluidPaused,
+      worldgenSimulationEnabled: world.getWorldgenFluidSimulationEnabled(),
+    },
     chunks: world.exportEditedChunks().map(serializeChunkPayload),
   }
 }
@@ -684,6 +607,9 @@ function applyWorldSave(save: WorldSaveFile) {
 
   restoreHotbarFromSave(save.hotbar)
   applyGraphicsPreset(save.graphicsPreset)
+  lighting.setTimeOfDay(save.timeOfDay)
+  fluidPaused = save.fluid.paused
+  world.setWorldgenFluidSimulationEnabled(save.fluid.worldgenSimulationEnabled)
 
   camera.position.set(save.player.x, save.player.y, save.player.z)
   yaw = save.player.yaw
